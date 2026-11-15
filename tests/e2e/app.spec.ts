@@ -14,7 +14,7 @@ test('選択・記述・中断再開・履歴・2色のスマートフォン画�
  await expect(page.getByRole('button',{name:'ア．サンプルA'})).toBeVisible();
  // Correct answers must not be present in pre-submission network payloads.
  const exercise=await (await request.get('/api/exercise')).json();expect(exercise.question).not.toHaveProperty('correctAnswer');expect(exercise.question).not.toHaveProperty('explanation');
- await page.getByRole('button',{name:'ア．サンプルA'}).click();await page.getByRole('button',{name:'一時中断',exact:true}).click();await page.getByRole('button',{name:'始める',exact:true}).click();await expect(page.getByRole('button',{name:'ア．サンプルA'})).toHaveAttribute('aria-pressed','true');
+ await page.getByRole('button',{name:'ア．サンプルA'}).click();await expect(page.locator('header,details,.exercise-meta,.eyebrow')).toHaveCount(0);await expect(page.getByRole('button',{name:'一時中断',exact:true})).toHaveCount(0);await page.goto('/');await page.getByRole('button',{name:'始める',exact:true}).click();await expect(page.getByRole('button',{name:'ア．サンプルA'})).toHaveAttribute('aria-pressed','true');
  await page.getByRole('button',{name:'回答を確定'}).click();await expect(page.getByRole('heading',{name:'正解',exact:true})).toBeVisible();await page.getByRole('link',{name:'次の問題へ'}).click();
  await page.getByRole('textbox',{name:'回答を入力'}).fill('用語1');await page.getByRole('button',{name:'回答を確定'}).click();await expect(page.getByRole('heading',{name:'正解',exact:true})).toBeVisible();
  const progress=await (await request.get('/api/rounds')).json();expect(progress.current.status).toBe('cleared');

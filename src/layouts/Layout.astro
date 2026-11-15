@@ -8,7 +8,7 @@ const { title, page, exercise=false }=Astro.props;
 <html lang="ja">
   <head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><meta name="robots" content="noindex,nofollow" /><title>{title} | 情報Ⅰ</title><link rel="stylesheet" href="/fonts/noto.css" /><link rel="icon" href="/favicon.svg" /></head>
   <body class:list={{exercise}} data-page={page}>
-    {page!=='dashboard' && <header class="site-header"><a href="/">戻る</a></header>}
+    {page!=='dashboard' && page!=='exercise' && <header class="site-header"><a href="/">戻る</a></header>}
     <main class:list={['main',{narrow:exercise||page==='login',home:page==='dashboard'}]} id="app"><slot />{page!=='dashboard' && <p class="loading" role="status">読み込み中</p>}</main>
     <script>import '../client/app';</script>
   </body>

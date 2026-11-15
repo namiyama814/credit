@@ -101,10 +101,9 @@ async function exercise(){
       location.assign(`/result/?id=${encodeURIComponent(result.attempt.id)}&next=${encodeURIComponent(nextURL)}`);
     }finally{submitting=false;submit.textContent='送信を再試行';}
   },true);
-  const pause=button('一時中断',async()=>{await save();location.assign('/');});
   const onPageHide=()=>{if(!submitting)localSave();};window.addEventListener('pagehide',onPageHide);
   disposeExercise=()=>{clearInterval(interval);clearTimeout(timer);window.removeEventListener('pagehide',onPageHide);};
-  render(el('div',{class:'exercise-meta'},el('span',{},`${q.origin==='ai'?'AI独自問題':q.sourceType}　${q.number}`),el('span',{},q.type)),el('p',{class:'eyebrow spaced'},q.unit),questionBody(q),inputArea,el('div',{class:'exercise-footer'},el('div',{class:'actions'},submit,pause),saveLabel),el('details',{},el('summary',{},'出典'),link('出典を開く',q.sourceUrl)));
+  render(questionBody(q),inputArea,el('div',{class:'exercise-footer'},submit,saveLabel));
 }
 async function resultPage(){
   const attemptId=params.get('id');if(!attemptId)throw new Error('回答を選択してください。');
