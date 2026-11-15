@@ -1,0 +1,35 @@
+[
+  {
+    "id": "sample-confirmation-001",
+    "source_type": "確認テスト",
+    "unit_name": "サンプル単元",
+    "lesson_name": "サンプル授業",
+    "source_url": "https://example.com/sample/sample-confirmation-001",
+    "question_number": "問1 Q1",
+    "question_type": "選択式",
+    "question_text": "サンプル問題文（実際の教材ではありません）。",
+    "choices": [
+      "ア．サンプル選択肢A",
+      "イ．サンプル選択肢B"
+    ],
+    "correct_answer": "未確認",
+    "explanation": "未確認",
+    "image_paths": [],
+    "answer_verified": false
+  },
+  {
+    "id": "sample-report-01-001",
+    "source_type": "レポート",
+    "unit_name": "サンプル単元",
+    "lesson_name": "サンプルレポート",
+    "source_url": "https://example.com/sample/sample-report-01-001",
+    "question_number": "問1 Q1",
+    "question_type": "記述式",
+    "question_text": "サンプル問題文（実際の教材ではありません）。",
+    "choices": [],
+    "correct_answer": "未確認",
+    "explanation": "未確認",
+    "image_paths": [],
+    "answer_verified": false
+  }
+]
