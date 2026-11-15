@@ -1,0 +1,10 @@
+{
+  "extends": "astro/tsconfigs/strict",
+  "compilerOptions": {
+    "target": "ES2023", "module": "ESNext", "moduleResolution": "Bundler",
+    "types": ["node"], "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "skipLibCheck": true, "noEmit": true, "allowImportingTsExtensions": true
+  },
+  "include": ["src/**/*", "scripts/**/*", "tests/**/*", "*.ts", ".cloudflare/types/index.d.ts"],
+  "exclude": ["dist", "node_modules", "info1-exam-preparation"]
+}
