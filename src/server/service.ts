@@ -235,7 +235,7 @@ export async function learningContext(db:D1Database,userId:string){
   return {examDate:'2027-01-21',timezone:'Asia/Tokyo',asOf:now(),progress:{current:progress.current,counts:progress.counts,next:progress.next,unresolved:progress.items.filter(i=>i.verdict==='pending'||i.verdict==='needs_review').slice(0,10)},analysis:{summary:analysis.summary,units:analysis.units,weakTopics:analysis.topics.slice(0,8),masteryTimeline:analysis.masteryTimeline.slice(-7)},recent:recent.items,recommended,aiIsReference:true};
 }
 export async function createPracticeSet(db:D1Database,userId:string,raw:unknown){
-  const c=PracticeInput.parse(raw),count=c.count??(c.mode==='mock'?20:10),setId=id(),t=now();
+  const c=PracticeInput.parse(raw),count=c.count??(c.origin==='school'&&c.questionIds?.length?c.questionIds.length:c.mode==='mock'?20:10),setId=id(),t=now();
   if(c.origin==='school'){
     const data=await listQuestions(db,{origin:'school',limit:100});
     const more=data.nextCursor?(await listQuestions(db,{origin:'school',limit:100,cursor:data.nextCursor})).items:[];

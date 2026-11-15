@@ -16,6 +16,7 @@ describe('教材と学習履歴',()=>{
   it('171問を保持し167問を採点対象にし、再インポートで重複しない',async()=>{
     for(const [i,q] of fullFixture().entries())await insertQuestion(h.db,q,i);
     let count=await h.db.prepare('SELECT COUNT(*) AS n,SUM(gradable) AS graded FROM question_versions').first<{n:number;graded:number}>();expect(count).toMatchObject({n:171,graded:167});
+    const questionIds=fullFixture().slice(0,11).map(q=>q.id);const set=await createPracticeSet(h.db,h.user,{origin:'school',mode:'comprehensive',name:'指定した11問',questionIds});expect((await practiceResults(h.db,h.user,set.id)).items.map(q=>q.question_id)).toEqual(questionIds);
     await startRound(h.db,h.user);const a=await answer('fixture-0',['0']);
     for(const [i,q] of fullFixture().entries())await insertQuestion(h.db,q,i);
     count=await h.db.prepare('SELECT COUNT(*) AS n,SUM(gradable) AS graded FROM question_versions').first<{n:number;graded:number}>();expect(count).toMatchObject({n:171,graded:167});expect((await getResult(h.db,h.user,a.attempt.id)).attempt.verdict).toBe('correct');

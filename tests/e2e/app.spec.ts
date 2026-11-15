@@ -22,3 +22,16 @@ test('選択・記述・中断再開・履歴・2色のスマートフォン画�
  const audit=await page.evaluate(()=>{const wrong:string[]=[];for(const n of document.querySelectorAll<HTMLElement>('body *')){const s=getComputedStyle(n);if(s.display==='none')continue;for(const p of ['color','backgroundColor','borderTopColor','outlineColor'] as const){const v=s[p];if(!['rgb(37, 37, 37)','rgb(255, 255, 255)','rgba(0, 0, 0, 0)'].includes(v)&&!(p==='backgroundColor'&&n.matches('button:hover:not(:disabled),.button:hover')&&['rgb(56, 56, 56)','rgb(242, 242, 242)'].includes(v)))wrong.push(`${n.tagName}.${p}=${v}`);}if(!s.fontFamily.includes('Noto Sans JP'))wrong.push(`font=${s.fontFamily}`);}return {wrong,overflow:document.documentElement.scrollWidth>window.innerWidth};});
  expect(audit.wrong).toEqual([]);expect(audit.overflow).toBe(false);expect(errors).toEqual([]);
 });
+
+test('指定した問題集を選ぶと問題一覧を挟まず演習し、通常周回を変更しない',async({page,request})=>{
+ const csrf=(await (await request.get('/api/me')).json()).csrf;await seed(request,csrf);
+ const before=await (await request.get('/api/rounds')).json();
+ const created=await request.post('/api/practice',{headers:{Origin:'http://127.0.0.1:4322','X-CSRF-Token':csrf},data:{origin:'school',mode:'comprehensive',name:'指定問題の演習',questionIds:['fixture-0']}});expect(created.ok()).toBe(true);const set=await created.json();
+ await page.context().addCookies((await request.storageState()).cookies);await page.goto('/');await page.getByRole('button',{name:'問題集を見る'}).click();
+ await expect(page.getByRole('link',{name:'指定問題の演習',exact:true})).toBeVisible();await expect(page.locator('.question-summary')).toHaveCount(0);
+ await page.getByRole('link',{name:'指定問題の演習',exact:true}).click();await expect(page.getByRole('button',{name:'ア．サンプルA'})).toBeVisible();
+ const exercise=await (await request.get(`/api/exercise?type=practice&id=${set.id}`)).json();expect(exercise.question.id).toBe('fixture-0');expect(exercise.contextType).toBe('practice');
+ await page.getByRole('button',{name:'ア．サンプルA'}).click();await page.getByRole('button',{name:'送信',exact:true}).click();await expect(page.getByRole('heading',{name:'正解',exact:true})).toBeVisible();await page.getByRole('link',{name:'次の問題へ'}).click();
+ await expect(page.getByRole('heading',{name:'回答が完了しました'})).toBeVisible();await page.getByRole('link',{name:'問題集へ',exact:true}).click();await expect(page).toHaveURL(/\/practice\/$/u);
+ const after=await (await request.get('/api/rounds')).json();expect(after).toEqual(before);
+});

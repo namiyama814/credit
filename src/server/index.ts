@@ -143,6 +143,7 @@ app.post('/api/import/finish',async c=>{
 // Learning screens are public. Only MCP authorization requires GitHub identity.
 app.all('*',async c=>{
 
+  if(c.req.path==='/questions/'||c.req.path==='/questions')return c.redirect('/practice/');
   if(c.req.path==='/login/'||c.req.path==='/login')return c.redirect('/');
   if(['/analytics/','/history/','/settings/'].includes(c.req.path))return c.redirect('/');
   return c.env.ASSETS.fetch(c.req.raw);

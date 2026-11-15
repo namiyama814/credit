@@ -1,8 +1,7 @@
-import type { nextExercise, getResult, listQuestions } from '../server/service';
+import type { nextExercise, getResult } from '../server/service';
 
 type Exercise=Awaited<ReturnType<typeof nextExercise>>;
 type Result=Awaited<ReturnType<typeof getResult>>;
-type QuestionList=Awaited<ReturnType<typeof listQuestions>>;
 type SafeQuestion=Result['question'];
 type Child=Node|string|null|undefined|false;
 const root=document.querySelector<HTMLElement>('#app')!;
@@ -62,7 +61,7 @@ async function exercise(){
   }else data=await api<Exercise>(`/exercise?type=${encodeURIComponent(type)}${contextId?`&id=${encodeURIComponent(contextId)}`:''}`);
   if(!data.question){
     const progress='progress' in data?data.progress:undefined;
-    render(el('h1',{},progress?.current?.status==='cleared'?'全問クリア':progress&&(progress.counts.pending||progress.counts.needs_review)?'採点を確認':'回答が完了しました'),progress&&el('p',{},`採点待ち ${progress.counts.pending}問　要確認 ${progress.counts.needs_review}問`),el('div',{class:'actions'},link('戻る','/',true)));return;
+    render(el('h1',{},progress?.current?.status==='cleared'?'全問クリア':progress&&(progress.counts.pending||progress.counts.needs_review)?'採点を確認':'回答が完了しました'),progress&&el('p',{},`採点待ち ${progress.counts.pending}問　要確認 ${progress.counts.needs_review}問`),el('div',{class:'actions'},link(type==='practice'?'問題集へ':'戻る',type==='practice'?'/practice/':'/',true)));return;
   }
   const q=data.question;
   if(!q.gradable){render(el('h1',{},'振り返り'),questionBody(q),el('p',{class:'message'},'正答未確認のため採点対象外です。'),link('問題一覧へ','/questions/'));return;}
@@ -114,18 +113,15 @@ async function resultPage(){
     r.attempt.method!=='rule'&&evaluation.reason&&section('参考評価',formatText(evaluation.reason),evaluation.improvement&&formatText(evaluation.improvement)),
     el('div',{class:'actions'},link('次の問題へ',nextURL,true),r.attempt.verdict==='pending'&&button('採点結果を更新',resultPage)));
 }
-async function questionsPage(){
-  const initial=await api<QuestionList>('/questions?limit=100'),more=initial.nextCursor?await api<QuestionList>(`/questions?limit=100&cursor=${initial.nextCursor}`):null;
-  const all=[...initial.items,...(more?.items??[])].filter(q=>q.origin==='school');
-  render(...all.map(q=>el('article',{class:'question-summary'},link(q.text,`/exercise/?type=review&question=${encodeURIComponent(q.id)}`))));
-}
 async function practicePage(){
+  const setId=params.get('id');if(setId){location.replace(`/exercise/?type=practice&id=${encodeURIComponent(setId)}`);return;}
   const sets=await api<{id:string;name:string;status:string}[]>('/practice');
-  render(el('div',{class:'collection-list'},link('情報Ⅰ','/questions/',true),...sets.filter(s=>s.status==='ready').map(s=>link(s.name,`/exercise/?type=practice&id=${encodeURIComponent(s.id)}`,true))));
+  const ready=sets.filter(s=>s.status==='ready');
+  render(ready.length?el('div',{class:'collection-list'},...ready.map(s=>link(s.name,`/exercise/?type=practice&id=${encodeURIComponent(s.id)}`,true))):el('p',{},'問題集がありません'));
 }
 async function main(){
   const session=await api<{userId:string;csrf:string}>('/me');csrf=session.csrf;userId=session.userId;
-  const routes:Record<string,()=>Promise<void>>={dashboard,exercise,result:resultPage,questions:questionsPage,practice:practicePage};
+  const routes:Record<string,()=>Promise<void>>={dashboard,exercise,result:resultPage,practice:practicePage};
   await (routes[page]??dashboard)();
 }
 void main().catch(error=>{document.querySelector('.loading')?.remove();flash(error instanceof Error?error.message:'読み込みに失敗しました。');});
