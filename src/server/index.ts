@@ -36,10 +36,11 @@ app.post('/auth/test',async c=>{
   const session=await createSession(c,'test-owner','テスト');return c.json(session);
 });
 app.use('/api/*',async(c,next)=>{
-  const session=await getSession(c);if(!session)return c.json({error:'ログインしてください。'},401);
-  c.set('userId',session.user_id);c.set('csrf',session.csrf);
+  const existing=await getSession(c);
+  const created=existing?null:await createSession(c,c.env.APP_MODE==='test'?'test-owner':`github:${c.env.OWNER_GITHUB_ID}`,'学習','study');
+  c.set('userId',existing?.user_id??created!.userId);c.set('csrf',existing?.csrf??created!.csrf);
   if(!['GET','HEAD'].includes(c.req.method)){
-    if(c.req.header('Origin')!==c.env.APP_ORIGIN||c.req.header('X-CSRF-Token')!==session.csrf)return c.json({error:'画面を更新してやり直してください。'},403);
+    if(c.req.header('Origin')!==c.env.APP_ORIGIN||c.req.header('X-CSRF-Token')!==c.get('csrf'))return c.json({error:'画面を更新してやり直してください。'},403);
   }
   await next();
 });
@@ -139,10 +140,11 @@ app.post('/api/import/finish',async c=>{
   await stmt(c.env.DB,'INSERT INTO imports VALUES(?,?,?,?,?)',id(),actual.total,actual.gradable,images,now()).run();
   return c.json({verified:true,...actual,images});
 });
-// Fonts/CSS/JS are public; the HTML screens themselves require a session.
+// Learning screens are public. Only MCP authorization requires GitHub identity.
 app.all('*',async c=>{
-  const publicPath=c.req.path==='/login/'||c.req.path==='/login'||c.req.path==='/auth.css'||c.req.path.startsWith('/fonts/')||c.req.path.startsWith('/_astro/')||c.req.path==='/favicon.svg';
-  if(!publicPath&&!(await getSession(c)))return c.redirect('/login/');
+
+  if(c.req.path==='/login/'||c.req.path==='/login')return c.redirect('/');
+  if(['/analytics/','/history/','/settings/'].includes(c.req.path))return c.redirect('/');
   return c.env.ASSETS.fetch(c.req.raw);
 });
 

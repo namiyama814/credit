@@ -2,7 +2,7 @@ import { McpServer } from '@modelcontextprotocol/server';
 import { createMcpHandler } from 'agents/mcp/server';
 import { z } from 'zod';
 import { AppError, parseJSON, safeQuestion, type Question } from './domain';
-import { learningContext, roundProgress, analytics, history, getVersion, listQuestions, recommendations, createPracticeSet, practiceResults, stmt } from './service';
+import { approvePracticeSet, learningContext, roundProgress, analytics, history, getVersion, listQuestions, recommendations, createPracticeSet, practiceResults, stmt } from './service';
 import { PracticeInput } from './domain';
 
 export const MCP_TOOLS=['get_learning_context','get_round_progress','get_weak_topics','get_answer_history','get_question_details','search_questions','recommend_questions','create_practice_set','get_practice_set_results','get_ai_grading_results'] as const;
@@ -30,7 +30,8 @@ export function mcpHandler(env:Env,userId:string,scopes:string[]){
     });
     tool('search_questions','単元・形式・概念・理解度・本文で問題を検索する。正答は含まない。',{...page,unit:z.string().optional(),type:z.enum(['選択式','記述式','論述式']).optional(),tag:z.string().optional(),origin:z.enum(['school','ai']).optional(),state:z.enum(['unseen','insufficient','needs_review','stable','review','developing']).optional(),query:z.string().max(80).optional(),minAccuracy:z.number().min(0).max(1).optional(),maxAccuracy:z.number().min(0).max(1).optional()},['questions:read'],i=>listQuestions(env.DB,i,userId));
     tool('recommend_questions','根拠付きの復習推薦。通常周回の対象・順番は変わらない。',{limit:z.number().int().min(1).max(30).default(10)},['learning:read','questions:read'],i=>recommendations(env.DB,userId,i.limit));
-    tool('create_practice_set','問題集を保存する。AI生成ではジョブを作り、検証後もアプリで本人の採用操作が必要。',PracticeInput.shape,['practice:write'],i=>createPracticeSet(env.DB,userId,i),true);
+    tool('create_practice_set','問題集を保存する。AI生成ではジョブを作り、検証後もMCPで採用確認が必要。',PracticeInput.shape,['practice:write'],i=>createPracticeSet(env.DB,userId,i),true);
+    tool('approve_practice_set','検証済みの独自問題を確認して採用する。get_practice_set_resultsで内容・参考解答・検証結果を確認してから実行する。',{setId:z.string()},['practice:write'],i=>approvePracticeSet(env.DB,userId,i.setId),true);
     tool('get_practice_set_results','問題集の状態・回答結果を取得する。',{setId:z.string()},['learning:read','questions:read'],async i=>{
       const r=await practiceResults(env.DB,userId,i.setId);
       return {...r,items:r.items.map(({correctAnswer,explanation,...v})=>({...v,...(scopes.includes('answers:read')?{correctAnswer,explanation}:{})}))};

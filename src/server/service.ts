@@ -257,3 +257,11 @@ export async function practiceResults(db:D1Database,userId:string,setId:string){
   const jobs=(await stmt(db,"SELECT id,status,kind,last_error,next_at FROM jobs WHERE user_id=? AND (json_extract(payload,'$.setId')=?) ORDER BY created_at DESC",userId,setId).all()).results;
   return {set:{...set,conditions:parseJSON(set.conditions)},items:questions,jobs};
 }
+
+export async function approvePracticeSet(db:D1Database,userId:string,setId:string){
+  const p=await practiceResults(db,userId,setId);
+  if(p.set.status==='ready')return {adopted:true};
+  if(p.set.status!=='draft'||!p.items.length||p.items.some(i=>!(i.verification as {valid?:boolean}).valid))throw new AppError(409,'検証済みの問題集を確認してください。');
+  await stmt(db,"UPDATE practice_sets SET status='ready' WHERE id=? AND user_id=? AND status='draft'",setId,userId).run();
+  return {adopted:true};
+}

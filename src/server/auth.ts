@@ -12,12 +12,12 @@ const secure=(c:AppContext)=>c.env.APP_MODE==='production';
 export const escapeHTML=(s:string)=>s.replace(/[&<>"']/gu,c=>`&#${c.charCodeAt(0)};`);
 export async function getSession(c:AppContext){
   const token=getCookie(c,cookieName(c));if(!token)return null;
-  return stmt(c.env.DB,'SELECT user_id,csrf,expires_at FROM sessions WHERE token_hash=? AND expires_at>?',await hash(token),now()).first<{user_id:string;csrf:string;expires_at:string}>();
+  return stmt(c.env.DB,'SELECT user_id,csrf,expires_at,auth_method FROM sessions WHERE token_hash=? AND expires_at>?',await hash(token),now()).first<{user_id:string;csrf:string;expires_at:string;auth_method:string}>();
 }
-export async function createSession(c:AppContext,userId:string,login:string){
+export async function createSession(c:AppContext,userId:string,login:string,authMethod:'github'|'study'='github'){
   await ensureUser(c.env.DB,userId,login);
   const token=id()+id(),csrf=id(),expires=new Date(Date.now()+7*86400000).toISOString();
-  await stmt(c.env.DB,'INSERT INTO sessions VALUES(?,?,?,?)',await hash(token),userId,csrf,expires).run();
+  await stmt(c.env.DB,'INSERT INTO sessions(token_hash,user_id,csrf,expires_at,auth_method) VALUES(?,?,?,?,?)',await hash(token),userId,csrf,expires,authMethod).run();
   setCookie(c,cookieName(c),token,{httpOnly:true,secure:secure(c),sameSite:'Lax',path:'/',maxAge:7*86400});
   return {userId,csrf};
 }
@@ -95,7 +95,7 @@ export async function authorizePOST(c:AppContext){
   if(scope.some(s=>!SCOPES.includes(s))||!scope.includes('learning:read'))throw new AppError(400,'学習状況の閲覧権限が必要です。');
   const approved=await oauth.approveConsent(c.req.raw,handle,{scope});
   const session=await getSession(c);
-  if(session){
+  if(session?.auth_method==='github'){
     const {redirectTo}=await oauth.completeAuthorization({request:approved.request,userId:session.user_id,metadata:{},scope:approved.request.scope,props:{userId:session.user_id,scopes:approved.request.scope}});
     approved.headers.set('Location',redirectTo);return new Response(null,{status:302,headers:approved.headers});
   }
