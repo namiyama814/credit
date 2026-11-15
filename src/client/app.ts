@@ -72,13 +72,13 @@ async function exercise(){
   let pending:{id:string;response:string|string[];durationMs:number}|null=null;
   try{pending=JSON.parse(localStorage.getItem(pendingKey)??'null');}catch{localStorage.removeItem(pendingKey);}
   if(pending)response=pending.response;
-  const saveLabel=el('span',{class:'muted',role:'status'},''),inputArea=el('div',{}),controls:HTMLButtonElement[]=[];
+  const inputArea=el('div',{}),controls:HTMLButtonElement[]=[];
   let textarea:HTMLInputElement|HTMLTextAreaElement|undefined,lastTick=performance.now(),timer:ReturnType<typeof setTimeout>|undefined,submitting=false;
   const tick=()=>{const t=performance.now();if(document.visibilityState==='visible'&&!submitting)elapsed+=Math.max(0,t-lastTick);lastTick=t;};
   const interval=setInterval(tick,1000);
   const localSave=()=>{tick();localStorage.setItem(draftKey,JSON.stringify({response,elapsedMs:Math.round(elapsed),versionId:q.versionId}));};
-  const save=async()=>{localSave();try{await api('/draft',{contextType:data.contextType,contextId:context,questionId:q.id,versionId:q.versionId,response,elapsedMs:Math.round(elapsed)},'PUT');saveLabel.textContent='保存済み';}catch{saveLabel.textContent='端末に保存済み';}};
-  const change=()=>{localSave();saveLabel.textContent='保存中';clearTimeout(timer);timer=setTimeout(()=>void save(),600);};
+  const save=async()=>{localSave();try{await api('/draft',{contextType:data.contextType,contextId:context,questionId:q.id,versionId:q.versionId,response,elapsedMs:Math.round(elapsed)},'PUT');}catch{/* The local draft remains available. */}};
+  const change=()=>{localSave();clearTimeout(timer);timer=setTimeout(()=>void save(),600);};
   if(q.type==='選択式'){
     const list=el('div',{class:'choice-list',role:'group','aria-label':'選択肢'});
     for(const choice of q.choices){const b=el('button',{type:'button',class:'choice','aria-pressed':Array.isArray(response)&&response.includes(choice.id)?'true':'false'},el('span',{class:'choice-indicator','aria-hidden':'true'}),el('span',{},choice.text));
@@ -87,23 +87,22 @@ async function exercise(){
   }else{
     const field=textField(q.type==='論述式'?'回答':'回答を入力',typeof response==='string'?response:'',q.type==='論述式');textarea=field.input;textarea.disabled=!!pending;textarea.addEventListener('input',()=>{response=textarea!.value;change();});append(inputArea,field.node);
   }
-  const submit=button(pending?'送信を再試行':'回答を確定',async()=>{
+  const submit=button('送信',async()=>{
     if(submitting)return;if(Array.isArray(response)?!response.length:!response.trim())throw new Error('回答を入力してください。');
     tick();submitting=true;clearTimeout(timer);
     pending??={id:crypto.randomUUID(),response,durationMs:Math.round(elapsed)};
     localStorage.setItem(pendingKey,JSON.stringify(pending));
     controls.forEach(b=>b.disabled=true);if(textarea)textarea.disabled=true;
-    submit.textContent='保存中';
     try{
       const result=await api<Result>('/answers',{...pending,contextType:data.contextType,contextId:context,questionId:q.id,versionId:q.versionId});
       localStorage.removeItem(draftKey);localStorage.removeItem(pendingKey);clearInterval(interval);
       const nextURL=data.contextType==='review'?'/questions/':data.contextType==='round'?'/exercise/':`/exercise/?type=practice&id=${encodeURIComponent(context)}`;
       location.assign(`/result/?id=${encodeURIComponent(result.attempt.id)}&next=${encodeURIComponent(nextURL)}`);
-    }finally{submitting=false;submit.textContent='送信を再試行';}
+    }finally{submitting=false;}
   },true);
   const onPageHide=()=>{if(!submitting)localSave();};window.addEventListener('pagehide',onPageHide);
   disposeExercise=()=>{clearInterval(interval);clearTimeout(timer);window.removeEventListener('pagehide',onPageHide);};
-  render(questionBody(q),inputArea,el('div',{class:'exercise-footer'},submit,saveLabel));
+  render(questionBody(q),inputArea,el('div',{class:'exercise-footer'},submit));
 }
 async function resultPage(){
   const attemptId=params.get('id');if(!attemptId)throw new Error('回答を選択してください。');
