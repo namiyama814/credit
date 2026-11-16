@@ -160,7 +160,16 @@ app.all('*',async c=>{
   if(c.req.path==='/questions/'||c.req.path==='/questions')return c.redirect('/practice/');
   if(c.req.path==='/login/'||c.req.path==='/login')return c.redirect('/');
   if(['/analytics/','/history/','/settings/'].includes(c.req.path))return c.redirect('/');
-  return c.env.ASSETS.fetch(c.req.raw);
+  const asset=await c.env.ASSETS.fetch(c.req.raw);
+  // Also cover clients with older cached stylesheets until their asset cache refreshes.
+  if(asset.headers.get('Content-Type')?.includes('text/html')){
+    return new HTMLRewriter().on('head',{
+      element(element){
+        element.append('<style>input:not([type=checkbox]):not([type=radio]):not([type=file]),textarea,select{font-size:16px}</style>',{html:true});
+      },
+    }).transform(asset);
+  }
+  return asset;
 });
 
 export function createProvider(env:Env){

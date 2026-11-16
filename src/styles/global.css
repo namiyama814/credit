@@ -13,3 +13,6 @@ body[data-page=practice] .main{max-width:800px;min-height:100svh;margin:0 auto;p
 input[type=checkbox]:checked{background:var(--ink) url("/icons/check.svg") center/18px 18px no-repeat}
 
 body[data-page=exercise] .main{min-height:100svh;margin:0 auto;padding-top:32px;padding-bottom:32px;display:flex;flex-direction:column;justify-content:center}body[data-page=exercise] .exercise-content{width:100%}body[data-page=exercise] .exercise-footer{position:static;padding:0;margin-top:28px}body[data-page=exercise] .choice-list{margin:24px 0}body[data-page=exercise] .field{margin:24px 0 0}
+
+/* Keep form controls at 16px to prevent iOS Safari from zooming on focus. */
+input:not([type=checkbox]):not([type=radio]):not([type=file]),textarea,select{font-size:16px}
