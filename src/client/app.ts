@@ -28,7 +28,6 @@ function button(label:string,fn:()=>unknown|Promise<unknown>,primary=false,small
   b.addEventListener('click',async()=>{b.disabled=true;try{await fn();}catch(error){flash(error instanceof Error?error.message:'処理を完了できませんでした。');}finally{b.disabled=false;}});return b;
 }
 const link=(label:string,href:string,primary=false)=>el('a',{href,class:primary?'button primary':''},label);
-const section=(title:string,...children:Child[])=>el('section',{class:'section'},el('h2',{},title),...children);
 function textField(label:string,value='',multiline=false){const i=multiline?el('textarea',{'aria-label':label}):el('input',{type:'text','aria-label':label});i.value=value;return {node:el('label',{class:'field'},label,i),input:i};}
 function formatText(text:string){
   const node=el('div',{class:'prose'});
@@ -107,11 +106,15 @@ async function resultPage(){
   const attemptId=params.get('id');if(!attemptId)throw new Error('回答を選択してください。');
   const r=await api<Result>(`/results/${encodeURIComponent(attemptId)}`),evaluation=r.attempt.evaluation_data as {reason:string;improvement:string};
   const next=params.get('next'),nextURL=next?.startsWith('/')&&!next.startsWith('//')?next:'/exercise/';
-  render(el('h1',{class:'result-label'},verdicts[r.attempt.verdict]),
-    section('あなたの回答',formatText(Array.isArray(r.attempt.response)?r.question.choices.filter(c=>(r.attempt.response as string[]).includes(c.id)).map(c=>c.text).join('\n'):String(r.attempt.response))),
-    section(String(r.answerKind),formatText(r.correctAnswer)),r.explanation&&section('解説',formatText(r.explanation)),
-    r.attempt.method!=='rule'&&evaluation.reason&&section('参考評価',formatText(evaluation.reason),evaluation.improvement&&formatText(evaluation.improvement)),
-    el('div',{class:'actions'},link('次の問題へ',nextURL,true),r.attempt.verdict==='pending'&&button('採点結果を更新',resultPage)));
+  const response=Array.isArray(r.attempt.response)?r.question.choices.filter(c=>(r.attempt.response as string[]).includes(c.id)).map(c=>c.text).join('\n'):String(r.attempt.response);
+  const answerBlock=(label:string,value:string)=>el('section',{class:'result-answer'},el('h2',{},label),formatText(value));
+  const symbol=r.attempt.verdict==='correct'?'○':r.attempt.verdict==='incorrect'?'×':r.attempt.verdict==='pending'?'…':'?';
+  render(el('div',{class:'result-status'},el('span',{class:'result-symbol','aria-hidden':'true'},symbol),el('h1',{class:'result-label'},verdicts[r.attempt.verdict])),
+    el('div',{class:'result-answers'},answerBlock('あなたの回答',response),answerBlock(String(r.answerKind),r.correctAnswer)),
+    r.explanation&&el('section',{class:'result-explanation'},el('h2',{},'解説'),formatText(r.explanation)),
+    r.attempt.method!=='rule'&&evaluation.reason&&el('section',{class:'result-explanation'},el('h2',{},'参考評価'),formatText(evaluation.reason),evaluation.improvement&&formatText(evaluation.improvement)),
+    el('div',{class:'result-footer'},r.attempt.verdict==='pending'&&button('採点結果を更新',resultPage),link('次の問題へ',nextURL,true)));
+
 }
 async function practicePage(){
   const setId=params.get('id');if(setId){location.replace(`/exercise/?type=practice&id=${encodeURIComponent(setId)}`);return;}
