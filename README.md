@@ -34,6 +34,14 @@ MCP用のGitHub OAuthを試す場合は `.dev.vars.example` を `.dev.vars` に�
 
 AIの予約使用量は1日8,000 Neuronsを目安に制限し、上限到達時は保留して翌UTC日に再開します。アカウント全体の厳密な請求上限ではありません。他のWorkerの使用量や予約見積もりとの差は含まれません。課金プランへの変更処理はありません。ローカルではAIを呼び出さず、明示的に `AI_REMOTE=true` と認証済みCLIを用意した場合にだけリモート推論を利用します。
 
+## PWA
+
+ブラウザの「インストール」または「ホーム画面に追加」から利用できます。起動時はホームを単独ウィンドウで開き、画面内にインストール案内は追加しません。192px・512pxのマスク対応アイコンと、iOS用180pxアイコンを用意しています。
+
+Service Workerは公開された画面用のJS・CSS、フォント、アイコン、オフライン画面だけをキャッシュします。教材API・画像API・回答・履歴・OAuth・MCPはキャッシュせず、回答のバックグラウンド再送も行いません。学習には通信が必要です。通信が切れた場合は「オフライン」と「再読み込み」だけを表示し、復帰後に再読み込みできます。更新の際に解答中の画面を強制再読み込みしません。
+
+本番はHTTPSで利用します。ローカルのループバック接続でもService Workerを検証できます。実装は [MDNのインストール要件](https://developer.mozilla.org/en-US/docs/Web/Progressive_web_apps/Guides/Making_PWAs_installable) と [Service Worker登録仕様](https://developer.mozilla.org/en-US/docs/Web/API/ServiceWorkerContainer/register) を参照しています。
+
 ## MCP
 
 接続先は本番の `/mcp` です。OAuth認可コード、PKCE、動的クライアント登録、更新・失効を実装しています。GitHubの数値IDで本人を照合します。既定の所有者IDは `253646578` です。

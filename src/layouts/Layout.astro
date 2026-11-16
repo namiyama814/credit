@@ -6,9 +6,9 @@ const { title, page, exercise=false }=Astro.props;
 ---
 <!doctype html>
 <html lang="ja">
-  <head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><meta name="robots" content="noindex,nofollow" /><title>{title} | 情報Ⅰ</title><link rel="stylesheet" href="/fonts/noto.css" /><link rel="icon" href="/favicon.svg" /></head>
+  <head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><meta name="robots" content="noindex,nofollow" /><title>{title} | 情報Ⅰ</title><link rel="stylesheet" href="/fonts/noto.css" /><link rel="icon" href="/favicon.svg" /><link rel="manifest" href="/manifest.webmanifest" /><meta name="theme-color" content="#252525" /><meta name="apple-mobile-web-app-capable" content="yes" /><meta name="apple-mobile-web-app-status-bar-style" content="default" /><meta name="apple-mobile-web-app-title" content="情報Ⅰ" /><link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" /></head>
   <body class:list={{exercise}} data-page={page}>
     <main class:list={['main',{narrow:exercise||page==='login',home:page==='dashboard',result:page==='result'}]} id="app"><slot />{page!=='dashboard' && <div class="loading" role="status" aria-label="読み込み中"><span class="spinner" aria-hidden="true"></span></div>}</main>
-    <script>import '../client/app';</script>
+    <script>import '../client/pwa'; import '../client/app';</script>
   </body>
 </html>

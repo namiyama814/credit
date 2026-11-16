@@ -18,3 +18,5 @@ playwright-report/
 coverage/
 *.cpuprofile
 /public/fonts/
+
+/public/pwa-fonts.json
