@@ -76,11 +76,13 @@ export function solveCalculation(c:z.infer<typeof Calculation>):string{
 const UNITS=['【第1回】情報で問題を解決する','【第2回】情報を伝える','【第3回】コンピュータを活用する','【第4回】データを活用する'];
 const UNIT_TAGS=[['情報モラル','著作権','問題解決・発想法'],['情報デザイン','2進数・数値表現','デジタルデータ'],['アルゴリズム','プログラミング','モデル化・シミュレーション'],['ネットワーク','情報セキュリティ','データ分析']];
 async function generateOne(env:Env,userId:string,setId:string,c:PracticeConditions&{count:number},position:number,jobId:string,lease:string){
-  const weak=(await analytics(env.DB,userId)).topics.filter(t=>t.incorrect>0).slice(0,3).map(t=>t.tag);
-  const unitIndex=position%4;
-  const concepts=c.tags.length?c.tags:c.mode==='weakness'&&weak.length?weak:UNIT_TAGS[unitIndex];
+  const topics=(await analytics(env.DB,userId)).topics;
+  const weak=topics.filter(t=>t.incorrect>0).slice(0,3).map(t=>t.tag);
+  const concepts=c.tags.length?c.tags:c.mode==='weakness'&&weak.length?weak:UNIT_TAGS[position%4];
+  const matchingUnits=UNIT_TAGS.map((tags,i)=>tags.some(t=>concepts.includes(t))?i:-1).filter(i=>i>=0);
+  const unitIndex=matchingUnits.length?matchingUnits[position%matchingUnits.length]:position%4;
   const existing=(await stmt(env.DB,'SELECT v.payload FROM practice_items i JOIN question_versions v ON v.id=i.version_id WHERE i.set_id=?',setId).all<{payload:string}>()).results.map(r=>parseJSON<Question>(r.payload).question_text);
-  const prompt=`高校「情報Ⅰ」の独自問題を1問作成してください。学校教材のコピーや単なる言い換えはせず、新しい具体的な状況を設定してください。モード ${c.mode}。${c.mode==='application'?'学んだ概念の応用を問う。':''}単元 ${UNITS[unitIndex]}。概念 ${concepts.join('、')}。本文は全て日本語。正解は一意にし、出題条件を明確にする。選択式ならchoicesは4件で記号を付けず、correctChoiceに0始まりの正答番号、answerには選択肢と同じ正答文字列を入れる。記述・論述ではchoicesは空配列でcorrectChoiceはnull。計算問題なら計算をcalculationの型で記述し、answerは単位なしの計算結果とする。data_sizeの結果はバイト、binary_additionは2進数、base_conversionはtoで指定した基数、16進は大文字。calculationで表せない計算問題は作らない。非計算問題ではcalculationはnull。参考解答と具体的な根拠を含む解説も作る。既存問題と重複しないこと。既存問題 ${JSON.stringify(existing)}。`;
+  const prompt=`高校「情報Ⅰ」の独自問題を1問作成してください。学校教材のコピーや単なる言い換えはせず、新しい具体的な状況を設定してください。問題集名 ${JSON.stringify(c.name)}。追加の出題条件 ${JSON.stringify(c.instructions??'')}。全${c.count}問の${position+1}問目。基礎から段階的に難易度を上げる（追加の出題条件に指定があれば優先）。対象概念の学習状況 ${JSON.stringify(topics.filter(t=>concepts.includes(t.tag)))}。モード ${c.mode}。${c.mode==='application'?'学んだ概念の応用を問う。':''}単元 ${UNITS[unitIndex]}。概念 ${concepts.join('、')}。本文は全て日本語。正解は一意にし、出題条件を明確にする。選択式ならchoicesは4件で記号を付けず、correctChoiceに0始まりの正答番号、answerには選択肢と同じ正答文字列を入れる。記述・論述ではchoicesは空配列でcorrectChoiceはnull。計算問題なら計算をcalculationの型で記述し、answerは単位なしの計算結果とする。data_sizeの結果はバイト、binary_additionは2進数、base_conversionはtoで指定した基数、16進は大文字。calculationで表せない計算問題は作らない。非計算問題ではcalculationはnull。参考解答と具体的な根拠を含む解説も作る。既存問題と重複しないこと。既存問題 ${JSON.stringify(existing)}。`;
   const g=Generated.parse(await runJSON(env,prompt,Generated,3200));
   if(g.type==='選択式'&&(g.choices.length!==4||g.correctChoice===null||g.correctChoice>=g.choices.length||g.choices[g.correctChoice]!==g.answer||new Set(g.choices).size!==g.choices.length))throw new Error('選択肢または正答の整合性を確認できません。');
   if(g.type!=='選択式'&&(g.choices.length||g.correctChoice!==null))throw new Error('記述問題の形式が不正です。');

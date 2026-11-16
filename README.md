@@ -68,6 +68,22 @@ Service Workerは公開された画面用のJS・CSS、フォント、アイコ�
 
 権限は `learning:read`、`questions:read`、`answers:read`、`practice:write`、`grading:write`、`offline_access` に分けています。正答閲覧・問題集作成・採点操作は認可画面で個別に許可し、初期状態では未選択です。採点操作は本人の明示的な依頼、`confirm: true`、理由を必須とします。元の回答と過去の評価を変更せず、評価を追加します。
 
+### OAuth権限不足からの再接続
+
+保護リソースのメタデータは基本操作の `learning:read`、認可サーバーのメタデータは全対応スコープを公開します。各ツールは `_meta.securitySchemes` で必要なスコープを公開し、権限不足時は `_meta["mcp/www_authenticate"]` に `insufficient_scope` と必要なスコープを返します。`get_question_details(includeAnswer: true)` は `answers:read` も要求します。
+
+既存トークンに不足している権限は、更新トークンで更新しても増えません。ChatGPTのcreditMCPをOAuth再接続し、認可画面で「学習状況・回答履歴の閲覧」「問題の閲覧」「正答・解説の閲覧」「問題集の作成」を選択してください。継続利用には「接続の継続」も選択できます。「採点の修正・再評価」は問題集作成には不要です。クライアントが `learning:read` だけを要求した場合も、認可画面で追加の権限を明示的に選べます。要求されていない追加権限、正答閲覧、書き込み権限は初期選択しません。
+
+問題集の作成例は以下です。`instructions` は他の単元にも使える任意の出題条件です。
+
+```json
+{"name":"2進数の基礎","origin":"ai","mode":"weakness","count":12,"tags":["2進数・数値表現"],"instructions":"桁の価値、2進数から10進数への変換、10進数から2進数への変換。基礎から段階的に難易度を上げる。"}
+```
+
+`get_learning_context` → `get_weak_topics` → `search_questions` → `get_question_details` → `create_practice_set` → `get_practice_set_results` の順に確認します。生成は1問ずつ進み、予算上限では `deferred` になります。`draft` になったら全問の参考解答・解説・独立検証・検算結果を確認してから `approve_practice_set` を実行し、再取得して `ready` を確認してください。生成予約だけでは完了ではありません。
+
+検証は、PlaywrightでOAuth認可コード・PKCE・同意したスコープの発行・更新・失効・権限拒否を、MCP SDKとローカルD1でAI問題の生成から検証結果確認・採用までを確認します。AI出力はテスト用の固定応答です。実GitHubの本人確認とChatGPT接続での実モデル生成・内容確認・採用は再認証後の確認対象です。
+
 ## 本番への配置
 
 本番認証の設定とデプロイは保留中です。想定URLは `https://info1-study.namiyama814.workers.dev`、GitHub OAuth Appのコールバックは `https://info1-study.namiyama814.workers.dev/auth/github/callback` です。
