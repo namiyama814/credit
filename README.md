@@ -24,6 +24,10 @@ npm run import -- --test
 
 MCP用のGitHub OAuthを試す場合は `.dev.vars.example` を `.dev.vars` にコピーして設定し、`npm run db:migrate`、`npm run dev` を実行します。GitHub OAuth Appのコールバックは `http://127.0.0.1:4321/auth/github/callback` にします。開発DBとテストDBは別です。
 
+## UI確認用モック
+
+ローカルサーバーの起動後、`npm run demo:seed` で「UI確認：選択式」「UI確認：記述式」「UI確認：論述式」の3問題集・計5問を追加できます。全問が架空のサンプルです。学校教材の通常周回には含めず、既存回答を変更しません。再実行しても重複しません。コマンドと追加用APIはローカルの開発・テストモード専用です。
+
 ## 学習と履歴
 
 - 1周目は採点対象の全問、2周目以降は前の周回の誤答だけを出題します。採点待ち・要確認がある間は全問クリアにしません。

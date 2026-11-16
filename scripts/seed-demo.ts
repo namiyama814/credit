@@ -1,0 +1,12 @@
+import { parseArgs } from 'node:util';
+const {values}=parseArgs({options:{url:{type:'string',default:'http://127.0.0.1:4321'}}});
+const url=new URL(values.url!);
+if(!['127.0.0.1','localhost','[::1]'].includes(url.hostname))throw new Error('ローカル環境専用です。');
+const session=await fetch(new URL('/api/me',url));
+if(!session.ok)throw new Error('ローカルサーバーを起動してください。');
+const me=await session.json() as {mode:string;csrf:string};
+if(!['test','development'].includes(me.mode))throw new Error('開発・テスト環境専用です。');
+const cookie=session.headers.get('set-cookie')?.split(';')[0]??'';
+const response=await fetch(new URL('/api/dev/demo-practice',url),{method:'POST',headers:{Cookie:cookie,Origin:url.origin,'X-CSRF-Token':me.csrf,'Content-Type':'application/json'},body:'{}'});
+if(!response.ok)throw new Error('モックを追加できませんでした。'+await response.text());
+console.log(JSON.stringify({...await response.json() as object,url:new URL('/practice/',url).href}));

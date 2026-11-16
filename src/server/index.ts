@@ -1,3 +1,4 @@
+import { seedDemo } from './demo';
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { OAuthProvider, AuthorizationError, CimdFetchError, type OAuthResourceContext } from '@cloudflare/workers-oauth-provider';
@@ -43,6 +44,10 @@ app.use('/api/*',async(c,next)=>{
     if(c.req.header('Origin')!==c.env.APP_ORIGIN||c.req.header('X-CSRF-Token')!==c.get('csrf'))return c.json({error:'画面を更新してやり直してください。'},403);
   }
   await next();
+});
+app.post('/api/dev/demo-practice',async c=>{
+  if(!['test','development'].includes(c.env.APP_MODE)||!['localhost','127.0.0.1','[::1]'].includes(new URL(c.req.url).hostname))return c.notFound();
+  return c.json(await seedDemo(c.env.DB,c.get('userId')));
 });
 app.get('/api/me',c=>c.json({userId:c.get('userId'),csrf:c.get('csrf'),mode:c.env.APP_MODE}));
 app.post('/api/logout',async c=>{await logout(c);return c.json({ok:true});});
