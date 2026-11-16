@@ -43,3 +43,22 @@ it('独自問題を生成・独立検証しても採用前は演習不可とす�
 it('検算できない正答を採用しない',()=>{
  expect(solveCalculation({type:'base_conversion',value:'1101',from:2,to:10})).toBe('13');expect(solveCalculation({type:'binary_addition',left:'11',right:'1'})).toBe('100');expect(solveCalculation({type:'data_size',sampleRate:8000,bits:8,channels:1,seconds:1})).toBe('8000');expect(()=>solveCalculation({type:'base_conversion',value:'19',from:2,to:10})).toThrow();
 });
+
+it('古いleaseの推論失敗は再取得したジョブと採点待ちを変更しない',async()=>{
+ const a=await pending();await h.db.prepare('UPDATE jobs SET tries=2').run();
+ ai(async()=>{await h.db.prepare("UPDATE jobs SET lease_until='2099-01-01T00:00:00.000Z',status='running'").run();throw new Error('古い処理の失敗');});
+ await processJobs(h.env,1);
+ expect((await h.db.prepare('SELECT verdict FROM effective_attempts WHERE id=?').bind(a.attempt.id).first<{verdict:string}>())!.verdict).toBe('pending');expect((await h.db.prepare('SELECT status,lease_until FROM jobs').first())).toMatchObject({status:'running',lease_until:'2099-01-01T00:00:00.000Z'});
+});
+it('古いleaseの生成失敗は新しい生成ジョブをfailedにしない',async()=>{
+ const set=await createPracticeSet(h.db,h.user,{origin:'ai',name:'生成競合',count:1});await h.db.prepare('UPDATE jobs SET tries=2').run();
+ ai(async()=>{await h.db.prepare("UPDATE jobs SET lease_until='2099-01-01T00:00:00.000Z',status='running'").run();throw new Error('古い生成の失敗');});await processJobs(h.env,1);
+ expect((await practiceResults(h.db,h.user,set.id)).set.status).toBe('generating');
+});
+
+it('最終問題保存後に生成ジョブが再開しても問題を追加しない',async()=>{
+ const set=await createPracticeSet(h.db,h.user,{origin:'ai',name:'再開生成',count:1});
+ const q=await insertQuestion(h.db,fixtureQuestion(70),70,'ai');await h.db.prepare('INSERT INTO practice_items VALUES(?,?,?,?,?)').bind(set.id,q.id,q.version,0,JSON.stringify({valid:true})).run();
+ ai(async()=>{throw new Error('呼び出してはいけません');});await processJobs(h.env,1);
+ expect(h.env.AI.run).not.toHaveBeenCalled();expect((await practiceResults(h.db,h.user,set.id)).set.status).toBe('draft');expect((await practiceResults(h.db,h.user,set.id)).items).toHaveLength(1);
+});

@@ -75,7 +75,7 @@ export function solveCalculation(c:z.infer<typeof Calculation>):string{
 }
 const UNITS=['【第1回】情報で問題を解決する','【第2回】情報を伝える','【第3回】コンピュータを活用する','【第4回】データを活用する'];
 const UNIT_TAGS=[['情報モラル','著作権','問題解決・発想法'],['情報デザイン','2進数・数値表現','デジタルデータ'],['アルゴリズム','プログラミング','モデル化・シミュレーション'],['ネットワーク','情報セキュリティ','データ分析']];
-async function generateOne(env:Env,userId:string,setId:string,c:PracticeConditions&{count:number},position:number){
+async function generateOne(env:Env,userId:string,setId:string,c:PracticeConditions&{count:number},position:number,jobId:string,lease:string){
   const weak=(await analytics(env.DB,userId)).topics.filter(t=>t.incorrect>0).slice(0,3).map(t=>t.tag);
   const unitIndex=position%4;
   const concepts=c.tags.length?c.tags:c.mode==='weakness'&&weak.length?weak:UNIT_TAGS[unitIndex];
@@ -95,8 +95,11 @@ async function generateOne(env:Env,userId:string,setId:string,c:PracticeConditio
   const answer=g.type==='選択式'?choices[g.correctChoice!]:g.answer;
   const q=SourceQuestion.parse({id:questionId,source_type:'確認テスト',unit_name:UNITS[unitIndex],lesson_name:'AI独自問題',source_url:`${env.APP_ORIGIN}/practice/?id=${setId}`,question_number:`Q${position+1}`,question_type:g.type,question_text:g.text,choices,correct_answer:`「${answer}」。`,explanation:g.explanation,image_paths:[],answer_verified:true,answer_kind:g.type==='論述式'?'解答例':'正答',generation:{model:env.AI_MODEL,promptVersion:'generation-v1',createdAt:now(),mode:c.mode}});
   const rule:GradingRule={type:g.type==='選択式'?'choice':g.type==='記述式'?'short':'essay',accepted:g.type==='選択式'?[String(g.correctChoice)]:[g.answer],normalizeWidth:true,caseSensitive:true,version:'generated-v1'};
-  const stored=await insertQuestion(env.DB,q,100000+position,'ai',rule,g.concepts);
-  await stmt(env.DB,'INSERT INTO practice_items VALUES(?,?,?,?,?)',setId,questionId,stored.version,position,JSON.stringify({...verification,calculation:g.calculation,calculationResult,ownerApprovalRequired:true,model:env.AI_MODEL,version:'verify-v1'})).run();
+  const current=await stmt(env.DB,"SELECT 1 FROM jobs j JOIN practice_sets s ON s.id=? WHERE j.id=? AND j.status='running' AND j.lease_until=? AND s.status='generating'",setId,jobId,lease).first();
+  if(!current)return false;
+  const stored=await insertQuestion(env.DB,q,100000+position,'ai',rule,g.concepts,{id:jobId,lease});
+  const saved=await stmt(env.DB,"INSERT INTO practice_items SELECT ?,?,?,?,? WHERE EXISTS(SELECT 1 FROM jobs WHERE id=? AND status='running' AND lease_until=?) AND EXISTS(SELECT 1 FROM practice_sets WHERE id=? AND status='generating')",setId,questionId,stored.version,position,JSON.stringify({...verification,calculation:g.calculation,calculationResult,ownerApprovalRequired:true,model:env.AI_MODEL,version:'verify-v1'}),jobId,lease,setId).run();
+  return !!saved.meta.changes;
 }
 interface Job {id:string;user_id:string;kind:string;payload:string;status:string;tries:number;lease_until:string|null;}
 export async function processJobs(env:Env,max=2){
@@ -105,11 +108,13 @@ export async function processJobs(env:Env,max=2){
     const lease=new Date(Date.now()+180000).toISOString();
     const claimed=await stmt(env.DB,"UPDATE jobs SET status='running',lease_until=?,tries=tries+1,updated_at=? WHERE id=? AND ((status IN ('pending','deferred') AND next_at<=?) OR (status='running' AND lease_until<?))",lease,now(),j.id,now(),now()).run();
     if(!claimed.meta.changes)continue;
+    let evaluationSeq:number|undefined;
     try{
       const p=parseJSON<{attemptId?:string;setId?:string;conditions?:PracticeConditions&{count:number}}>(j.payload);
       if(j.kind==='grade'){
         const a=await stmt(env.DB,'SELECT * FROM effective_attempts WHERE id=? AND user_id=?',p.attemptId!,j.user_id).first<AttemptRow&{evaluation_seq:number}>();
         if(!a)throw new Error('回答が見つかりません。');
+        evaluationSeq=a.evaluation_seq;
         const result=await gradeEssay(env,a);
         const current=await stmt(env.DB,"SELECT 1 FROM jobs WHERE id=? AND status='running' AND lease_until=?",j.id,lease).first();
         const unchanged=await stmt(env.DB,'SELECT 1 FROM effective_attempts WHERE id=? AND evaluation_seq=?',a.id,a.evaluation_seq).first();
@@ -120,11 +125,18 @@ export async function processJobs(env:Env,max=2){
           await stmt(env.DB,"UPDATE jobs SET status='done',updated_at=? WHERE id=? AND lease_until=?",now(),j.id,lease).run();continue;
         }
         const n=(await stmt(env.DB,'SELECT COUNT(*) AS n FROM practice_items WHERE set_id=?',p.setId!).first<{n:number}>())!.n;
-        await generateOne(env,j.user_id,p.setId!,p.conditions!,n);
+        // A previous invocation may have saved the final question before it
+        // stopped. Resume finalization without generating an extra question.
+        if(n>=p.conditions!.count){
+          await env.DB.batch([stmt(env.DB,"UPDATE practice_sets SET status='draft' WHERE id=? AND user_id=? AND status='generating' AND EXISTS(SELECT 1 FROM jobs WHERE id=? AND status='running' AND lease_until=?)",p.setId!,j.user_id,j.id,lease),stmt(env.DB,"UPDATE jobs SET status='done',lease_until=NULL,updated_at=?,last_error=NULL WHERE id=? AND status='running' AND lease_until=?",now(),j.id,lease)]);
+          continue;
+        }
+        const saved=await generateOne(env,j.user_id,p.setId!,p.conditions!,n,j.id,lease);
+        if(!saved)continue;
         if(n+1<p.conditions!.count){
           await stmt(env.DB,"UPDATE jobs SET status='pending',tries=0,lease_until=NULL,next_at=?,updated_at=?,last_error=NULL WHERE id=? AND lease_until=?",now(),now(),j.id,lease).run();continue;
         }
-        await stmt(env.DB,"UPDATE practice_sets SET status='draft' WHERE id=? AND user_id=?",p.setId!,j.user_id).run();
+        await stmt(env.DB,"UPDATE practice_sets SET status='draft' WHERE id=? AND user_id=? AND status='generating' AND EXISTS(SELECT 1 FROM jobs WHERE id=? AND status='running' AND lease_until=?)",p.setId!,j.user_id,j.id,lease).run();
       }
       await stmt(env.DB,"UPDATE jobs SET status='done',lease_until=NULL,updated_at=?,last_error=NULL WHERE id=? AND lease_until=?",now(),j.id,lease).run();
     }catch(error){
@@ -135,11 +147,13 @@ export async function processJobs(env:Env,max=2){
       // Errors are classified without logging the potentially private model response.
       const reason=deferred?'AIの無料枠または利用制限のため保留中':retry?'AI処理を再試行します':'AI処理を完了できませんでした。内容を確認してください。';
       const next=deferred?new Date(new Date().setUTCHours(24,1,0,0)).toISOString():new Date(Date.now()+60000*(j.tries+1)).toISOString();
-      await stmt(env.DB,"UPDATE jobs SET status=?,lease_until=NULL,next_at=?,last_error=?,updated_at=?,tries=CASE WHEN ?=1 THEN MAX(0,tries-1) ELSE tries END WHERE id=? AND lease_until=?",deferred?'deferred':retry?'pending':'failed',next,reason,now(),Number(deferred),j.id,lease).run();
+      const failureAt=now();
+      const failure=await stmt(env.DB,"UPDATE jobs SET status=?,lease_until=NULL,next_at=?,last_error=?,updated_at=?,tries=CASE WHEN ?=1 THEN MAX(0,tries-1) ELSE tries END WHERE id=? AND status='running' AND lease_until=?",deferred?'deferred':retry?'pending':'failed',next,reason,failureAt,Number(deferred),j.id,lease).run();
+      if(!failure.meta.changes)continue;
       if(!retry&&!deferred){
         const p=parseJSON<{attemptId?:string;setId?:string}>(j.payload);
-        if(p.attemptId){const a=await stmt(env.DB,'SELECT method,verdict FROM effective_attempts WHERE id=? AND user_id=?',p.attemptId,j.user_id).first<{method:string;verdict:string}>();if(a?.verdict==='pending')await recordEvaluation(env.DB,j.user_id,p.attemptId,failedGrade(reason),'ai');}
-        if(p.setId)await stmt(env.DB,"UPDATE practice_sets SET status='failed' WHERE id=? AND user_id=?",p.setId,j.user_id).run();
+        if(p.attemptId){const a=await stmt(env.DB,'SELECT method,verdict,evaluation_seq FROM effective_attempts WHERE id=? AND user_id=?',p.attemptId,j.user_id).first<{method:string;verdict:string;evaluation_seq:number}>();if(a?.verdict==='pending'&&evaluationSeq!==undefined)await recordEvaluation(env.DB,j.user_id,p.attemptId,failedGrade(reason),'ai',{seq:evaluationSeq,jobId:j.id,lease:null,status:'failed'});}
+        if(p.setId)await stmt(env.DB,"UPDATE practice_sets SET status='failed' WHERE id=? AND user_id=? AND status='generating' AND EXISTS(SELECT 1 FROM jobs WHERE id=? AND status='failed' AND updated_at=?)",p.setId,j.user_id,j.id,failureAt).run();
       }
     }
   }

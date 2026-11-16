@@ -6,16 +6,19 @@ export async function exportBackup(db:D1Database){
   // D1 batch gives a consistent database snapshot across all exported tables.
   const results=await db.batch<Record<string,unknown>>(BACKUP_TABLES.map(t=>db.prepare(`SELECT * FROM ${t}`)));
   BACKUP_TABLES.forEach((t,i)=>{data[t]=results[i].results.map(row=>{
-    const r={...row};if((t==='assets'||t==='asset_blobs')&&r.bytes){const bytes=new Uint8Array(r.bytes as number[]);r.bytes={base64:btoa(String.fromCharCode(...bytes))};}return r;
+    const r={...row};if((t==='assets'||t==='asset_blobs')&&r.bytes){const bytes=new Uint8Array(r.bytes as number[]);let binary='';for(let offset=0;offset<bytes.length;offset+=8192)binary+=String.fromCharCode(...bytes.subarray(offset,offset+8192));r.bytes={base64:btoa(binary)};}return r;
   });});
   return {format:'info1-backup-v1',createdAt:now(),data};
 }
 export async function restoreBackup(db:D1Database,raw:unknown,userId:string){
   const b=raw as {format?:string;data?:Record<string,Record<string,unknown>[]>};
   if(b?.format!=='info1-backup-v1'||!b.data||typeof b.data!=='object')throw new AppError(400,'バックアップ形式が不正です。');
-  if((await db.prepare('SELECT COUNT(*) AS n FROM attempts').first<{n:number}>())!.n)throw new AppError(409,'履歴が空のデータベースにだけ復元できます。先に現在の履歴を保存してください。');
-  if(!b.data.users?.some(u=>u.id===userId)||b.data.users.some(u=>u.id!==userId))throw new AppError(403,'本人のバックアップを選択してください。');
-  const commands:D1PreparedStatement[]=[];
+  const emptyTarget=BACKUP_TABLES.filter(table=>table!=='users').map(table=>`NOT EXISTS(SELECT 1 FROM ${table})`).join(' AND ');
+  if(!(await db.prepare(`SELECT ${emptyTarget} AS empty`).first<{empty:number}>())?.empty)throw new AppError(409,'履歴が空で教材・問題集も未登録のデータベースにだけ復元できます。');
+  if(!Array.isArray(b.data.users)||!b.data.users.length||b.data.users.some(u=>!u||typeof u!=='object'||u.id!==userId))throw new AppError(403,'本人のバックアップを選択してください。');
+  // Recheck inside the atomic batch: a concurrent import or answer cannot mix
+  // with the restored snapshot. Invalid JSON deliberately aborts the transaction.
+  const commands:D1PreparedStatement[]=[db.prepare(`SELECT CASE WHEN ${emptyTarget} THEN 1 ELSE json('restore_target_not_empty') END`)];
   for(const table of BACKUP_TABLES){
     const rows=b.data[table];if(!Array.isArray(rows)||rows.length>100000)throw new AppError(400,'バックアップの内容が不正です。');
     const columns=(await db.prepare(`PRAGMA table_info(${table})`).all<{name:string}>()).results.map(c=>c.name);
@@ -30,11 +33,11 @@ export async function restoreBackup(db:D1Database,raw:unknown,userId:string){
         const v=row[k];if(v!==null&&typeof v!=='string'&&typeof v!=='number')throw new AppError(400,'バックアップ値が不正です。');return v;
       });
       // Inserts only: no deletion of existing master data or sessions.
-      commands.push(stmt(db,`INSERT OR IGNORE INTO ${table} (${keys.join(',')}) VALUES (${keys.map(()=>'?').join(',')})`,...values));
+      commands.push(stmt(db,`INSERT ${table==='users'?'OR IGNORE ':''}INTO ${table} (${keys.join(',')}) VALUES (${keys.map(()=>'?').join(',')})`,...values));
     }
   }
   if(commands.length>20000)throw new AppError(400,'バックアップが大きすぎます。管理用のD1復元手順を使用してください。');
   await db.batch(commands);
   await stmt(db,"UPDATE jobs SET status='pending',lease_until=NULL,next_at=?,updated_at=? WHERE status='running'",now(),now()).run();
-  return {restored:true,recordCount:commands.length,restorationId:id()};
+  return {restored:true,recordCount:commands.length-1,restorationId:id()};
 }

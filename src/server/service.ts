@@ -12,7 +12,7 @@ export async function getVersion(db: D1Database, questionId: string, versionId?:
   if (!row) throw new AppError(404, '問題が見つかりません。');
   return row;
 }
-export async function insertQuestion(db: D1Database, raw: unknown, position: number, origin = 'school', ruleOverride?: GradingRule, tagsOverride?: string[]) {
+export async function insertQuestion(db: D1Database, raw: unknown, position: number, origin = 'school', ruleOverride?: GradingRule, tagsOverride?: string[], jobGuard?:{id:string;lease:string}) {
   const q = SourceQuestion.parse(raw);
   const rule = ruleOverride ?? deriveRule(q);
   const tags = tagsOverride ?? deriveTags(q);
@@ -21,10 +21,12 @@ export async function insertQuestion(db: D1Database, raw: unknown, position: num
   const contentHash = await hash(JSON.stringify({ q, rule, tags, images:imageRows.filter(Boolean) }));
   const version = `${q.id}:${contentHash.slice(0, 24)}`;
   const created = now();
+  const guard=jobGuard?" WHERE EXISTS(SELECT 1 FROM jobs WHERE id=? AND status='running' AND lease_until=?)":' WHERE 1';
+  const guardedArgs=jobGuard?[jobGuard.id,jobGuard.lease]:[];
   await db.batch([
-    stmt(db, 'INSERT INTO questions(id,origin,unit,kind,current_version,position,created_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET current_version=excluded.current_version,unit=excluded.unit,kind=excluded.kind,position=excluded.position WHERE questions.origin=excluded.origin',q.id,origin,q.unit_name,q.question_type,version,position,created),
-    stmt(db, 'INSERT OR IGNORE INTO question_versions(id,question_id,content_hash,payload,grading,tags,gradable,created_at) VALUES(?,?,?,?,?,?,?,?)',version,q.id,contentHash,payload,JSON.stringify(rule),JSON.stringify(tags),Number(q.answer_verified && rule.type !== 'none'),created),
-    ...imageRows.filter((r):r is {path:string;content_hash:string}=>!!r).map(r=>stmt(db,'INSERT OR IGNORE INTO version_assets VALUES(?,?,?)',version,r.path,r.content_hash)),
+    stmt(db, 'INSERT INTO questions(id,origin,unit,kind,current_version,position,created_at) SELECT ?,?,?,?,?,?,?'+guard+' ON CONFLICT(id) DO UPDATE SET current_version=excluded.current_version,unit=excluded.unit,kind=excluded.kind,position=excluded.position WHERE questions.origin=excluded.origin',q.id,origin,q.unit_name,q.question_type,version,position,created,...guardedArgs),
+    stmt(db, 'INSERT OR IGNORE INTO question_versions(id,question_id,content_hash,payload,grading,tags,gradable,created_at) SELECT ?,?,?,?,?,?,?,?'+guard,version,q.id,contentHash,payload,JSON.stringify(rule),JSON.stringify(tags),Number(q.answer_verified && rule.type !== 'none'),created,...guardedArgs),
+    ...imageRows.filter((r):r is {path:string;content_hash:string}=>!!r).map(r=>stmt(db,'INSERT OR IGNORE INTO version_assets SELECT ?,?,?'+guard,version,r.path,r.content_hash,...guardedArgs)),
   ]);
   return { id: q.id, version, tags, rule, gradable: q.answer_verified && rule.type !== 'none' };
 }
@@ -105,8 +107,8 @@ export async function nextExercise(db:D1Database,userId:string,contextType='roun
   }else throw new AppError(400,'演習形式が不正です。');
   if(!item)return {question:null,contextType,contextId:context,draft:null};
   const row=await getVersion(db,item.question_id,item.version_id);
-  const draft=await stmt(db,'SELECT response,elapsed_ms,updated_at FROM drafts WHERE user_id=? AND context_type=? AND context_id=? AND question_id=?',userId,contextType,context,item.question_id).first<{response:string;elapsed_ms:number}>();
-  return {question:safeQuestion(parseJSON<Question>(row.payload),row.id,parseJSON<string[]>(row.tags),row.origin),contextType,contextId:context,draft:draft?{response:parseJSON(draft.response),elapsedMs:draft.elapsed_ms}:null};
+  const draft=await stmt(db,'SELECT response,elapsed_ms,updated_at FROM drafts WHERE user_id=? AND context_type=? AND context_id=? AND question_id=?',userId,contextType,context,item.question_id).first<{response:string;elapsed_ms:number;updated_at:string}>();
+  return {question:safeQuestion(parseJSON<Question>(row.payload),row.id,parseJSON<string[]>(row.tags),row.origin),contextType,contextId:context,draft:draft?{response:parseJSON(draft.response),elapsedMs:draft.elapsed_ms,updatedAt:draft.updated_at,versionId:row.id}:null};
 }
 export async function validateContext(db:D1Database,userId:string,input:Pick<Answer,'contextType'|'contextId'|'questionId'|'versionId'>) {
   if(input.contextType==='round'){
@@ -115,14 +117,23 @@ export async function validateContext(db:D1Database,userId:string,input:Pick<Ans
   }else if(input.contextType==='practice'){
     const valid=await stmt(db,"SELECT 1 FROM practice_items i JOIN practice_sets s ON s.id=i.set_id WHERE i.set_id=? AND i.question_id=? AND i.version_id=? AND s.user_id=? AND s.status='ready'",input.contextId,input.questionId,input.versionId,userId).first();
     if(!valid)throw new AppError(409,'問題集の対象を再取得してください。');
-  }else if(input.contextId!=='review')throw new AppError(400,'復習の指定が不正です。');
+  }else{
+    if(input.contextId!=='review')throw new AppError(400,'復習の指定が不正です。');
+    const current=await stmt(db,'SELECT 1 FROM questions WHERE id=? AND current_version=?',input.questionId,input.versionId).first();
+    if(!current)throw new AppError(409,'問題を再取得してください。');
+  }
 }
 export async function submitAnswer(db:D1Database,userId:string,raw:unknown) {
   const input=AnswerInput.parse(raw);
   const existing=await stmt(db,'SELECT * FROM attempts WHERE id=? AND user_id=?',input.id,userId).first<AttemptRow>();
   if(existing){
-    if(existing.context_id!==input.contextId||existing.question_id!==input.questionId||existing.response!==JSON.stringify(input.response))throw new AppError(409,'同じ送信IDに別の回答が含まれています。');
+    if(existing.context_type!==input.contextType||existing.context_id!==input.contextId||existing.question_id!==input.questionId||existing.version_id!==input.versionId||existing.response!==JSON.stringify(input.response))throw new AppError(409,'同じ送信IDに別の回答が含まれています。');
     return getResult(db,userId,existing.id);
+  }
+  const sameTarget=await stmt(db,"SELECT id,response,version_id FROM attempts WHERE user_id=? AND context_type=? AND context_id=? AND question_id=?",userId,input.contextType,input.contextId,input.questionId).first<{id:string;response:string;version_id:string}>();
+  if(input.contextType!=='review'&&sameTarget){
+    if(sameTarget.version_id===input.versionId&&sameTarget.response===JSON.stringify(input.response))return getResult(db,userId,sameTarget.id);
+    throw new AppError(409,'別の回答が保存されました。問題を再取得してください。');
   }
   await validateContext(db,userId,input);
   const row=await getVersion(db,input.questionId,input.versionId);
@@ -139,8 +150,11 @@ export async function submitAnswer(db:D1Database,userId:string,raw:unknown) {
   if(evaluation.verdict==='pending')statements.push(stmt(db,"INSERT INTO jobs(id,user_id,kind,payload,status,next_at,created_at,updated_at) VALUES(?,?,'grade',?,'pending',?,?,?)",id(),userId,JSON.stringify({attemptId:input.id}),created,created,created));
   try { await db.batch(statements); }
   catch(error){
-    const duplicate=await stmt(db,'SELECT id FROM attempts WHERE user_id=? AND context_type=? AND context_id=? AND question_id=?',userId,input.contextType,input.contextId,input.questionId).first<{id:string}>();
-    if(duplicate)throw new AppError(409,`回答は保存済みです。履歴から確認してください。`);
+    const duplicate=await stmt(db,'SELECT id,response,version_id FROM attempts WHERE user_id=? AND context_type=? AND context_id=? AND question_id=?',userId,input.contextType,input.contextId,input.questionId).first<{id:string;response:string;version_id:string}>();
+    if(duplicate){
+      if(duplicate.version_id===input.versionId&&duplicate.response===JSON.stringify(input.response))return getResult(db,userId,duplicate.id);
+      throw new AppError(409,'別の回答が保存されました。問題を再取得してください。');
+    }
     throw error;
   }
   if(input.contextType==='round')await advanceRound(db,userId,input.contextId);
@@ -153,13 +167,13 @@ export async function getResult(db:D1Database,userId:string,attemptId:string){
   const evaluations=(await stmt(db,'SELECT id,verdict,score,method,data,created_at FROM evaluations WHERE attempt_id=? ORDER BY seq',a.id).all<{id:string;verdict:string;score:number|null;method:string;data:string;created_at:string}>()).results.map(e=>({...e,data:parseJSON(e.data)}));
   return {attempt:{...a,response:parseJSON(a.response),evaluation_data:parseJSON(a.evaluation_data)},question:safeQuestion(q,row.id,parseJSON<string[]>(row.tags),row.origin),correctAnswer:q.correct_answer,answerKind:q.answer_kind ?? (q.question_type==='論述式'?'解答例':'正答'),explanation:q.explanation,teacherComment:q.teacher_comment ?? '',evaluations};
 }
-export async function recordEvaluation(db:D1Database,userId:string,attemptId:string,evaluation:Evaluation,method:'ai'|'manual',expected?:{seq:number;jobId:string;lease:string}){
+export async function recordEvaluation(db:D1Database,userId:string,attemptId:string,evaluation:Evaluation,method:'ai'|'manual',expected?:{seq:number;jobId:string;lease:string|null;status?:'running'|'failed'}){
   const a=await stmt(db,'SELECT a.*,r.status AS round_status FROM effective_attempts a LEFT JOIN rounds r ON r.id=a.context_id AND a.context_type=\'round\' WHERE a.id=? AND a.user_id=?',attemptId,userId).first<AttemptRow&{round_status:string|null}>();
   if(!a)throw new AppError(404,'回答が見つかりません。');
   const evaluationId=id();
   const argumentsForEvaluation=[evaluationId,a.id,evaluation.verdict,evaluation.score,method,JSON.stringify(evaluation),now()];
-  const guard=expected?' WHERE EXISTS(SELECT 1 FROM effective_attempts WHERE id=? AND evaluation_seq=?) AND EXISTS(SELECT 1 FROM jobs WHERE id=? AND status=\'running\' AND lease_until=?)':'';
-  const statements=[stmt(db,'INSERT INTO evaluations(id,attempt_id,verdict,score,method,data,created_at) SELECT ?,?,?,?,?,?,?'+guard,...argumentsForEvaluation,...(expected?[a.id,expected.seq,expected.jobId,expected.lease]:[]))];
+  const guard=expected?' WHERE EXISTS(SELECT 1 FROM effective_attempts WHERE id=? AND evaluation_seq=?) AND EXISTS(SELECT 1 FROM jobs WHERE id=? AND status=? AND lease_until IS ?)':'';
+  const statements=[stmt(db,'INSERT INTO evaluations(id,attempt_id,verdict,score,method,data,created_at) SELECT ?,?,?,?,?,?,?'+guard,...argumentsForEvaluation,...(expected?[a.id,expected.seq,expected.jobId,expected.status??'running',expected.lease]:[]))];
   if(method==='manual')statements.push(stmt(db,"UPDATE jobs SET status='done',lease_until=NULL,updated_at=? WHERE kind='grade' AND user_id=? AND json_extract(payload,'$.attemptId')=? AND status!='done'",now(),userId,attemptId));
   if(a.context_type==='round'&&a.round_status!=='active'&&evaluation.verdict==='incorrect')statements.push(stmt(db,'INSERT INTO review_debts(user_id,question_id,version_id,created_at) SELECT ?,?,?,? WHERE EXISTS(SELECT 1 FROM evaluations WHERE id=?) ON CONFLICT(user_id,question_id) DO UPDATE SET version_id=excluded.version_id,created_at=excluded.created_at',userId,a.question_id,a.version_id,now(),evaluationId));
   if(evaluation.verdict==='correct')statements.push(stmt(db,'DELETE FROM review_debts WHERE user_id=? AND question_id=? AND EXISTS(SELECT 1 FROM evaluations WHERE id=?)',userId,a.question_id,evaluationId));
@@ -171,7 +185,7 @@ export async function recordEvaluation(db:D1Database,userId:string,attemptId:str
     else {const last=await stmt(db,'SELECT id FROM rounds WHERE user_id=? ORDER BY cycle DESC,number DESC LIMIT 1',userId).first<{id:string}>();if(last)await advanceRound(db,userId,last.id);}
   }
 }
-export async function requestRegrade(db:D1Database,userId:string,attemptId:string){
+export async function requestRegrade(db:D1Database,userId:string,attemptId:string,reason?:string){
   const a=await stmt(db,'SELECT * FROM attempts WHERE id=? AND user_id=?',attemptId,userId).first<AttemptRow>();
   if(!a)throw new AppError(404,'回答が見つかりません。');
   const row=await getVersion(db,a.question_id,a.version_id);
@@ -181,7 +195,7 @@ export async function requestRegrade(db:D1Database,userId:string,attemptId:strin
   const jobId=id(),t=now();
   await db.batch([
     stmt(db,"UPDATE rounds SET status='complete' WHERE id=? AND user_id=? AND status='cleared'",a.context_id,userId),
-    stmt(db,"INSERT INTO evaluations(id,attempt_id,verdict,score,method,data,created_at) VALUES(?,?,'pending',NULL,'ai',?,?)",id(),attemptId,JSON.stringify({...gradeRule({type:'essay',accepted:[],normalizeWidth:false,caseSensitive:true,version:'v1'},''),reason:'再評価待ち'}),t),
+    stmt(db,"INSERT INTO evaluations(id,attempt_id,verdict,score,method,data,created_at) VALUES(?,?,'pending',NULL,'ai',?,?)",id(),attemptId,JSON.stringify({...gradeRule({type:'essay',accepted:[],normalizeWidth:false,caseSensitive:true,version:'v1'},''),reason:reason??'再評価待ち'}),t),
     stmt(db,"INSERT INTO jobs(id,user_id,kind,payload,status,next_at,created_at,updated_at) VALUES(?,?,'grade',?,'pending',?,?,?)",jobId,userId,JSON.stringify({attemptId}),t,t,t),
   ]);
   return {id:jobId};
@@ -198,7 +212,7 @@ export async function history(db:D1Database,userId:string,filter:{questionId?:st
   return {items:rows.results.slice(0,limit).map(a=>({...a,response:parseJSON(a.response),evaluation_data:parseJSON(a.evaluation_data)})),nextCursor:rows.results.length>limit?String(offset+limit):null};
 }
 export async function analytics(db:D1Database,userId:string){
-  const rows=(await stmt(db,'SELECT a.id,a.question_id,a.context_type,a.context_id,a.created_at,a.duration_ms,a.verdict,a.score,a.method,q.unit,v.tags FROM effective_attempts a JOIN questions q ON q.id=a.question_id JOIN question_versions v ON v.id=a.version_id WHERE a.user_id=? ORDER BY a.created_at,a.id',userId).all<{id:string;question_id:string;context_type:string;context_id:string;created_at:string;duration_ms:number;verdict:string;score:number|null;method:string;unit:string;tags:string}>()).results;
+  const rows=(await stmt(db,"SELECT a.id,a.question_id,a.context_type,a.context_id,a.created_at,a.duration_ms,a.verdict,a.score,a.method,q.unit,v.tags FROM effective_attempts a JOIN questions q ON q.id=a.question_id JOIN question_versions v ON v.id=a.version_id WHERE a.user_id=? AND json_extract(v.payload,'$.mock') IS NOT 1 ORDER BY a.created_at,a.id",userId).all<{id:string;question_id:string;context_type:string;context_id:string;created_at:string;duration_ms:number;verdict:string;score:number|null;method:string;unit:string;tags:string}>()).results;
   const byQuestion=new Map<string,typeof rows>(),byUnit=new Map<string,typeof rows>(),byTag=new Map<string,typeof rows>(),byDay=new Map<string,typeof rows>(),byRound=new Map<string,typeof rows>();
   const add=(m:Map<string,typeof rows>,k:string,r:typeof rows[number])=>m.set(k,[...(m.get(k)??[]),r]);
   for(const r of rows){add(byQuestion,r.question_id,r);add(byUnit,r.unit,r);for(const t of parseJSON<string[]>(r.tags))add(byTag,t,r);add(byDay,new Date(r.created_at).toLocaleDateString('sv-SE',{timeZone:'Asia/Tokyo'}),r);if(r.context_type==='round')add(byRound,r.context_id,r);}
@@ -228,7 +242,7 @@ export async function analytics(db:D1Database,userId:string){
 export async function recommendations(db:D1Database,userId:string,limit=10){
   const a=await analytics(db,userId),list=await listQuestions(db,{origin:'school',limit:100});
   const all=list.nextCursor?[...list.items,...(await listQuestions(db,{origin:'school',limit:100,cursor:list.nextCursor})).items]:list.items;
-  return a.questions.sort((x,y)=>y.priority-x.priority).slice(0,Math.min(limit,30)).map(s=>({question:all.find(q=>q.id===s.questionId),...s,reason:s.lastVerdict==='needs_review'?'採点の確認':s.lastVerdict==='incorrect'?'直近の不正解':s.incorrect>1?'繰り返しの誤答':'定着の確認'}));
+  return a.questions.filter(stat=>all.some(q=>q.id===stat.questionId)).sort((x,y)=>y.priority-x.priority).slice(0,Math.min(limit,30)).map(s=>({question:all.find(q=>q.id===s.questionId),...s,reason:s.lastVerdict==='needs_review'?'採点の確認':s.lastVerdict==='incorrect'?'直近の不正解':s.incorrect>1?'繰り返しの誤答':'定着の確認'}));
 }
 export async function learningContext(db:D1Database,userId:string){
   const [progress,analysis,recent,recommended]=await Promise.all([roundProgress(db,userId),analytics(db,userId),history(db,userId,{limit:5}),recommendations(db,userId,5)]);
@@ -264,4 +278,21 @@ export async function approvePracticeSet(db:D1Database,userId:string,setId:strin
   if(p.set.status!=='draft'||!p.items.length||p.items.some(i=>!(i.verification as {valid?:boolean}).valid))throw new AppError(409,'検証済みの問題集を確認してください。');
   await stmt(db,"UPDATE practice_sets SET status='ready' WHERE id=? AND user_id=? AND status='draft'",setId,userId).run();
   return {adopted:true};
+}
+
+export async function restartPracticeSet(db:D1Database,userId:string,setId:string){
+  const source=await stmt(db,"WITH RECURSIVE chain AS (SELECT * FROM practice_sets WHERE id=? AND user_id=? AND status='ready' UNION SELECT child.* FROM practice_sets child JOIN chain parent ON json_extract(child.conditions,'$.repeatedFrom')=parent.id WHERE child.user_id=? AND child.status='ready') SELECT c.* FROM chain c WHERE NOT EXISTS(SELECT 1 FROM practice_sets child WHERE child.user_id=? AND json_extract(child.conditions,'$.repeatedFrom')=c.id AND child.status='ready') LIMIT 1",setId,userId,userId,userId).first<{id:string;name:string;mode:string;origin:string;conditions:string}>();
+  if(!source)throw new AppError(404,'問題集が見つかりません。');
+  setId=source.id;
+  const unanswered=await stmt(db,"SELECT 1 FROM practice_items i WHERE i.set_id=? AND NOT EXISTS(SELECT 1 FROM attempts a WHERE a.user_id=? AND a.context_type='practice' AND a.context_id=i.set_id AND a.question_id=i.question_id) LIMIT 1",setId,userId).first();
+  if(unanswered)return {id:setId,status:'ready'};
+  const existing=await stmt(db,"SELECT id FROM practice_sets WHERE user_id=? AND json_extract(conditions,'$.repeatedFrom')=?",userId,setId).first<{id:string}>();
+  if(existing)return {id:existing.id,status:'ready'};
+  const next=id();
+  await db.batch([
+    stmt(db,"INSERT OR IGNORE INTO practice_sets(id,user_id,name,mode,origin,status,conditions,created_at) VALUES(?,?,?,?,?,'ready',?,?)",next,userId,source.name,source.mode,source.origin,JSON.stringify({...parseJSON<Record<string,unknown>>(source.conditions),repeatedFrom:setId}),now()),
+    stmt(db,'INSERT INTO practice_items(set_id,question_id,version_id,position,verification) SELECT ?,question_id,version_id,position,verification FROM practice_items WHERE set_id=? AND EXISTS(SELECT 1 FROM practice_sets WHERE id=?)',next,setId,next),
+  ]);
+  const saved=await stmt(db,"SELECT id FROM practice_sets WHERE user_id=? AND json_extract(conditions,'$.repeatedFrom')=?",userId,setId).first<{id:string}>();
+  return {id:saved!.id,status:'ready'};
 }

@@ -1,11 +1,12 @@
+import { practiceVisibility } from './practice-visibility';
 import { seedDemo } from './demo';
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { OAuthProvider, AuthorizationError, CimdFetchError, type OAuthResourceContext } from '@cloudflare/workers-oauth-provider';
 import { z } from 'zod';
 import { SourceQuestion, AppError, id, now, hash, parseJSON, safeQuestion, type Question, type Evaluation } from './domain';
-import { stmt, insertQuestion, startRound, roundProgress, nextExercise, submitAnswer, getResult, recordEvaluation, requestRegrade, history, analytics, learningContext, listQuestions, getVersion, createPracticeSet, practiceResults, validateContext } from './service';
-import { getSession, createSession, logout, githubStart, githubCallback, authorizeGET, authorizePOST, SCOPES, type Bindings, type Variables } from './auth';
+import { stmt, insertQuestion, restartPracticeSet, startRound, roundProgress, nextExercise, submitAnswer, getResult, recordEvaluation, requestRegrade, history, analytics, learningContext, listQuestions, getVersion, createPracticeSet, practiceResults, validateContext } from './service';
+import { getSession, isOwnerSession, createSession, logout, githubStart, githubCallback, authorizeGET, authorizePOST, SCOPES, type Bindings, type Variables } from './auth';
 import { mcpHandler } from './mcp';
 import { processJobs } from './ai';
 import { exportBackup, restoreBackup } from './backup';
@@ -38,6 +39,9 @@ app.post('/auth/test',async c=>{
 });
 app.use('/api/*',async(c,next)=>{
   const existing=await getSession(c);
+  const path=c.req.path;
+  const management=path==='/api/backup'||path==='/api/restore'||path.startsWith('/api/import/')||path==='/api/jobs/run'||/^\/api\/results\/[^/]+\/(correct|regrade)$/u.test(path)||(path.startsWith('/api/practice')&&!['GET','HEAD'].includes(c.req.method)&&!/^\/api\/practice\/[^/]+\/restart$/u.test(path));
+  if(c.env.APP_MODE==='production'&&management&&!isOwnerSession(existing,c.env))return c.json({error:'管理操作には本人のGitHub認証が必要です。'},403);
   const created=existing?null:await createSession(c,c.env.APP_MODE==='test'?'test-owner':`github:${c.env.OWNER_GITHUB_ID}`,'学習','study');
   c.set('userId',existing?.user_id??created!.userId);c.set('csrf',existing?.csrf??created!.csrf);
   if(!['GET','HEAD'].includes(c.req.method)){
@@ -97,9 +101,14 @@ app.get('/api/images',async c=>{
 });
 app.get('/api/history',async c=>c.json(await history(c.env.DB,c.get('userId'),{...queryFilters(c),questionId:c.req.query('questionId'),from:c.req.query('from'),to:c.req.query('to'),verdict:c.req.query('verdict')})));
 app.get('/api/analytics',async c=>c.json(await analytics(c.env.DB,c.get('userId'))));
-app.get('/api/practice',async c=>c.json((await stmt(c.env.DB,'SELECT * FROM practice_sets WHERE user_id=? ORDER BY created_at DESC LIMIT 100',c.get('userId')).all()).results));
+app.get('/api/practice',async c=>c.json((await stmt(c.env.DB,"SELECT * FROM practice_sets WHERE user_id=? AND json_extract(conditions,'$.repeatedFrom') IS NULL ORDER BY created_at DESC LIMIT 100",c.get('userId')).all()).results));
 app.post('/api/practice',async c=>{const r=await createPracticeSet(c.env.DB,c.get('userId'),await c.req.json());if(r.status==='generating')c.executionCtx.waitUntil(processJobs(c.env,1));return c.json(r,201);});
-app.get('/api/practice/:id',async c=>c.json(await practiceResults(c.env.DB,c.get('userId'),c.req.param('id'))));
+app.post('/api/practice/:id/restart',async c=>c.json(await restartPracticeSet(c.env.DB,c.get('userId'),c.req.param('id')),201));
+app.get('/api/practice/:id',async c=>{
+  const data=await practiceResults(c.env.DB,c.get('userId'),c.req.param('id'));
+  const owner=isOwnerSession(await getSession(c),c.env);
+  return c.json(practiceVisibility(data,owner));
+});
 app.post('/api/practice/:id/adopt',async c=>{
   const p=await practiceResults(c.env.DB,c.get('userId'),c.req.param('id'));
   if(p.set.status!=='draft'||!p.items.length||p.items.some(i=>!(i.verification as {valid?:boolean}).valid))throw new AppError(409,'検証済みの問題集を確認してください。');
@@ -163,6 +172,7 @@ export function createProvider(env:Env){
       const auth=ctx as OAuthResourceContext<{userId:string;scopes:string[]}>;
       const userId=auth.props?.userId;
       if(!userId||!auth.auth.scope.includes('learning:read'))return new Response('権限がありません。',{status:403});
+      if(bindings.APP_MODE==='production'&&userId!==`github:${bindings.OWNER_GITHUB_ID}`)return new Response('権限がありません。',{status:403});
       const exists=await stmt(bindings.DB,'SELECT 1 FROM users WHERE id=?',userId).first();if(!exists)return new Response('権限がありません。',{status:403});
       return mcpHandler(bindings,userId,auth.auth.scope)(request,bindings,ctx);
     }},

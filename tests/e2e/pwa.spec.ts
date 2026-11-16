@@ -18,6 +18,8 @@ test('PWAのインストール設定・オフライン復帰・教材のキャ�
     expect(bytes.readUInt32BE(16)).toBe(width);
     expect(bytes.readUInt32BE(20)).toBe(height);
   }
+  const workerSource=await (await page.request.get('/sw.js')).text();
+  expect(workerSource).toMatch(/const CACHE = 'info1-shell-[0-9a-f]{20}';/u);
   const cdp = await context.newCDPSession(page);
   expect((await cdp.send('Page.getAppManifest')).errors).toEqual([]);
   await page.evaluate(async () => { await navigator.serviceWorker.ready; });

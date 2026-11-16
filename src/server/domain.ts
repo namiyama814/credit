@@ -123,7 +123,7 @@ export function deriveTags(q: Question): string[] {
   return tags.length ? tags : ['情報の基礎'];
 }
 export function safeQuestion(q: Question, versionId: string, tags: string[], origin = 'school') {
-  return { id: q.id, versionId, origin, sourceType: q.source_type, unit: q.unit_name,
+  return { id: q.id, versionId, origin, mock:q.mock===true, sourceType: q.source_type, unit: q.unit_name,
     lesson: q.lesson_name, number: q.question_number, type: q.question_type,
     text: q.question_text, choices: q.choices.map((text, i) => ({ id: String(i), text })),
     images: q.image_paths.map(path => `/api/images?path=${encodeURIComponent(path)}&version=${encodeURIComponent(versionId)}`),

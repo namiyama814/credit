@@ -22,7 +22,7 @@ if(values.test){
  if(!['localhost','127.0.0.1','[::1]'].includes(url.hostname))throw new Error('--testはローカル専用です。');
  const r=await fetch(new URL('/auth/test',url),{method:'POST'});if(!r.ok)throw new Error('テストモードのサーバーを起動してください。');cookie=r.headers.get('set-cookie')?.split(';')[0]??'';
 }else if(values['cookie-file'])cookie=(await readFile(values['cookie-file'],'utf8')).trim();
-else throw new Error('本番は設定画面から取り込むか、--cookie-fileに本人セッションのCookieヘッダーを保存した非公開ファイルを指定してください。');
+else throw new Error('本番は--cookie-fileに所有者のGitHub認証済みセッションのCookieヘッダーを保存した非公開ファイルを指定してください。');
 const me=await fetch(new URL('/api/me',url),{headers:{Cookie:cookie}});if(!me.ok)throw new Error('ログインを確認してください。');const {csrf}=await me.json() as {csrf:string};
 async function send(path:string,body:unknown){const r=await fetch(new URL('/api'+path,url),{method:'POST',headers:{Cookie:cookie,Origin:url.origin,'X-CSRF-Token':csrf,'Content-Type':'application/json'},body:JSON.stringify(body)});if(!r.ok){const err=await r.json() as {error:string};throw new Error(err.error);}return r.json();}
 for(const image of imageData)await send('/import/image',image);

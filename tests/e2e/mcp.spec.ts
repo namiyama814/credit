@@ -12,7 +12,7 @@ async function authorize(page:Page,request:APIRequestContext,scopes:string,githu
  const query=new URLSearchParams({client_id:clientId,redirect_uri:callback,response_type:'code',scope:scopes,state:'test-state',code_challenge:challenge,code_challenge_method:'S256',resource:`${origin}/mcp`});
  await page.route('**/oauth/test-callback?**',route=>route.fulfill({status:200,contentType:'text/plain',body:'接続確認'}));
  await page.goto('/authorize?'+query);await expect(page.getByRole('heading',{name:'MCP検証クライアントとの接続'})).toBeVisible();
- for(const name of ['正答・解説の閲覧','問題集の作成']){const checkbox=page.getByRole('checkbox',{name});if(await checkbox.count())await checkbox.check();}
+ for(const name of ['正答・解説の閲覧','問題集の作成','採点の修正・再評価']){const checkbox=page.getByRole('checkbox',{name});if(await checkbox.count())await checkbox.check();}
  if(!github){const handle=await page.locator('input[name=handle]').inputValue();const r=await page.request.post(origin+'/authorize',{headers:{Origin:origin},form:{handle,decision:'approve',scope:'learning:read'},maxRedirects:0});expect(r.status()).toBe(302);expect(new URL(r.headers().location).origin).toBe('https://github.com');return {tokens:{access_token:'',refresh_token:''},clientId};}
  await page.getByRole('button',{name:'接続を許可'}).click();
  await expect(page).toHaveURL(/\/oauth\/test-callback/u);
@@ -20,12 +20,12 @@ async function authorize(page:Page,request:APIRequestContext,scopes:string,githu
  const token=await request.post('/oauth/token',{form:{grant_type:'authorization_code',client_id:clientId,redirect_uri:callback,code:code!,code_verifier:verifier,resource:`${origin}/mcp`}});
  expect(token.ok()).toBe(true);const tokens=await token.json();expect(tokens.access_token).toBeTruthy();return {tokens,clientId};
 }
-test('OAuth認可後、実際のMCP SDKクライアントで全11ツールを呼ぶ',async({page,request})=>{
+test('OAuth認可後、実際のMCP SDKクライアントで全13ツールを呼ぶ',async({page,request})=>{
  const {tokens,clientId}=await authorize(page,request,'learning:read questions:read answers:read practice:write offline_access');
  const client=new Client({name:'info1-integration',version:'1.0.0'});
  await client.connect(new StreamableHTTPClientTransport(new URL(`${origin}/mcp`),{requestInit:{headers:{Authorization:`Bearer ${tokens.access_token}`}}}));
  try{
-  const tools=await client.listTools();expect(tools.tools).toHaveLength(11);
+  const tools=await client.listTools();expect(tools.tools).toHaveLength(13);
   const calls:[string,Record<string,unknown>][]=[['get_learning_context',{}],['get_round_progress',{}],['get_weak_topics',{}],['get_answer_history',{}],['get_question_details',{questionId:'fixture-0',includeAnswer:true}],['search_questions',{}],['recommend_questions',{}],['get_ai_grading_results',{}]];
   for(const [name,args]of calls){const result=await client.callTool({name,arguments:args});expect(result.isError,`${name}: ${JSON.stringify(result)}`).not.toBe(true);}
   const created=await client.callTool({name:'create_practice_set',arguments:{origin:'school',name:'MCPからの復習',count:1}});expect(created.isError).not.toBe(true);const setId=(created.structuredContent as {data:{id:string}}).data.id;
@@ -39,10 +39,26 @@ test('OAuth認可後、実際のMCP SDKクライアントで全11ツールを呼
 });
 test('読み取りだけのトークンでは問題集を作れない',async({page,request})=>{
  const {tokens}=await authorize(page,request,'learning:read');const client=new Client({name:'readonly-test',version:'1.0.0'});await client.connect(new StreamableHTTPClientTransport(new URL(`${origin}/mcp`),{requestInit:{headers:{Authorization:`Bearer ${tokens.access_token}`}}}));
- try{expect((await client.callTool({name:'get_learning_context',arguments:{}})).isError).not.toBe(true);expect((await client.callTool({name:'create_practice_set',arguments:{origin:'school',name:'拒否される問題集',count:1}})).isError).toBe(true);}finally{await client.close();}
+ try{expect((await client.callTool({name:'get_learning_context',arguments:{}})).isError).not.toBe(true);expect((await client.callTool({name:'create_practice_set',arguments:{origin:'school',name:'拒否される問題集',count:1}})).isError).toBe(true);expect((await client.callTool({name:'review_grading',arguments:{attemptId:'not-found',verdict:'correct',reason:'拒否テスト',confirm:true}})).isError).toBe(true);expect((await client.callTool({name:'regrade_answer',arguments:{attemptId:'not-found',reason:'拒否テスト',confirm:true}})).isError).toBe(true);}finally{await client.close();}
 });
 
 test('ログイン不要の学習セッションだけではMCPを認可できない',async({page,request})=>{
  await authorize(page,request,'learning:read',false);
  expect((await request.get('/mcp')).status()).toBe(401);
+});
+
+test('採点修正は明示権限・確認・理由が必要で元の回答と評価を保持する',async({page,request})=>{
+ const {tokens}=await authorize(page,request,'learning:read grading:write');
+ const me=await (await request.get('/api/me')).json();
+ const question=await (await request.get('/api/questions/fixture-0')).json();
+ const submitted=await request.post('/api/answers',{headers:{Origin:origin,'X-CSRF-Token':me.csrf},data:{id:crypto.randomUUID(),contextType:'review',contextId:'review',questionId:question.id,versionId:question.versionId,response:['0'],durationMs:100}});
+ expect(submitted.ok()).toBe(true);const before=await submitted.json();
+ const client=new Client({name:'grading-test',version:'1.0.0'});await client.connect(new StreamableHTTPClientTransport(new URL(origin+'/mcp'),{requestInit:{headers:{Authorization:`Bearer ${tokens.access_token}`}}}));
+ try{
+  const args={attemptId:before.attempt.id,verdict:'incorrect',reason:'本人が参考解答と照合して訂正を依頼',confirm:true};
+  expect((await client.callTool({name:'review_grading',arguments:{...args,confirm:false}})).isError).toBe(true);
+  expect((await client.callTool({name:'review_grading',arguments:args})).isError).not.toBe(true);
+  const after=await (await request.get('/api/results/'+before.attempt.id)).json();expect(after.attempt.response).toEqual(before.attempt.response);expect(after.attempt.verdict).toBe('incorrect');expect(after.evaluations).toHaveLength(before.evaluations.length+1);expect(after.evaluations.at(-1).data.reason).toBe(args.reason);
+  expect((await client.callTool({name:'regrade_answer',arguments:{attemptId:before.attempt.id,reason:'本人依頼',confirm:true}})).isError).toBe(true);
+ }finally{await client.close();}
 });

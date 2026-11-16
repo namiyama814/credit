@@ -1,7 +1,7 @@
 import { describe,it,expect,beforeEach,afterEach } from 'vitest';
 import { harness } from './helpers';
 import { fixtureQuestion,fullFixture } from './fixtures';
-import { insertQuestion,startRound,roundProgress,submitAnswer,recordEvaluation,analytics,nextExercise,createPracticeSet,practiceResults,getResult } from '../src/server/service';
+import { restartPracticeSet,insertQuestion,startRound,roundProgress,submitAnswer,recordEvaluation,analytics,nextExercise,createPracticeSet,practiceResults,getResult,recommendations,history } from '../src/server/service';
 import { deriveRule,gradeRule,id,now,type Evaluation } from '../src/server/domain';
 import { exportBackup,restoreBackup } from '../src/server/backup';
 let h:Awaited<ReturnType<typeof harness>>;
@@ -45,7 +45,7 @@ describe('教材と学習履歴',()=>{
     await seed(2);const r=await startRound(h.db,h.user),item=(await roundProgress(h.db,h.user)).items[0];const input={id:id(),contextType:'round',contextId:r.id,questionId:item.question_id,versionId:item.version_id,response:['0'],durationMs:200};
     const [a,b]=await Promise.all([submitAnswer(h.db,h.user,input),submitAnswer(h.db,h.user,input).catch(()=>null)]);expect(a.attempt.verdict).toBe('correct');if(b)expect(b.attempt.id).toBe(a.attempt.id);
     await submitAnswer(h.db,h.user,input);expect((await h.db.prepare('SELECT COUNT(*) AS n FROM attempts').first<{n:number}>())!.n).toBe(1);
-    await expect(submitAnswer(h.db,h.user,{...input,id:id()})).rejects.toThrow('保存済み');
+    expect((await submitAnswer(h.db,h.user,{...input,id:id()})).attempt.id).toBe(a.attempt.id);await expect(submitAnswer(h.db,h.user,{...input,id:id(),response:['1']})).rejects.toThrow('別の回答');
   });
   it('問題の再取込後も進行中の出題バージョンを維持する',async()=>{
     await seed(1);const r=await startRound(h.db,h.user),v=(await roundProgress(h.db,h.user)).items[0].version_id;
@@ -84,4 +84,59 @@ describe('画像の固定',()=>{
     const backup=await exportBackup(h.db),other=await harness();
     try{await restoreBackup(other.db,backup,other.user);expect((await other.db.prepare('SELECT COUNT(*) AS n FROM asset_blobs').first<{n:number}>())!.n).toBe(2);}finally{await other.mf.dispose();}
   });
+});
+
+describe('監査回帰',()=>{
+  it('大きな画像もスタック上限なしにバックアップ・復元する',async()=>{
+    const bytes=new Uint8Array(200000);bytes[199999]=123;
+    await h.db.prepare('INSERT INTO assets VALUES(?,?,?,?)').bind('assets/large.png','image/png',bytes.buffer,'large').run();
+    const backup=await exportBackup(h.db),other=await harness();
+    try{await restoreBackup(other.db,backup,other.user);const restored=await other.db.prepare('SELECT bytes FROM assets').first<{bytes:number[]}>();expect(restored!.bytes).toHaveLength(200000);expect(restored!.bytes[199999]).toBe(123);}finally{await other.mf.dispose();}
+  });
+  it('履歴が空でも教材登録済みのDBへ混合復元しない',async()=>{
+    await seed(1);const backup=await exportBackup(h.db),other=await harness();
+    try{const existing=await insertQuestion(other.db,{...fixtureQuestion(0),question_text:'別のマスタ'},0);await expect(restoreBackup(other.db,backup,other.user)).rejects.toThrow('教材・問題集も未登録');expect((await other.db.prepare('SELECT current_version FROM questions').first<{current_version:string}>())!.current_version).toBe(existing.version);}finally{await other.mf.dispose();}
+  });
+  it('問題集の再演習では固定バージョンを複製し元の回答を残す',async()=>{
+    await seed(1);const first=await createPracticeSet(h.db,h.user,{origin:'school',name:'再演習',count:1}),item=(await practiceResults(h.db,h.user,first.id)).items[0];
+    await submitAnswer(h.db,h.user,{id:id(),contextType:'practice',contextId:first.id,questionId:item.question_id,versionId:item.version_id,response:['0'],durationMs:10});
+    await insertQuestion(h.db,{...fixtureQuestion(0),question_text:'更新された別の問題'},0);
+    const second=await restartPracticeSet(h.db,h.user,first.id),exercise=await nextExercise(h.db,h.user,'practice',second.id);
+    expect(exercise.question!.versionId).toBe(item.version_id);expect(exercise.question!.text).toBe(fixtureQuestion(0).question_text);expect((await practiceResults(h.db,h.user,first.id)).items[0].verdict).toBe('correct');expect((await roundProgress(h.db,h.user)).current).toBeNull();
+  });
+});
+
+describe('演習入力と解析の監査',()=>{
+  it('未回答の問題集再開と重複再開で新しい問題集を乱立させない',async()=>{
+    await seed(1);const set=await createPracticeSet(h.db,h.user,{origin:'school',name:'再開',count:1});expect((await restartPracticeSet(h.db,h.user,set.id)).id).toBe(set.id);
+    const item=(await practiceResults(h.db,h.user,set.id)).items[0];await submitAnswer(h.db,h.user,{id:id(),contextType:'practice',contextId:set.id,questionId:item.question_id,versionId:item.version_id,response:['0'],durationMs:10});
+    const [a,b]=await Promise.all([restartPracticeSet(h.db,h.user,set.id),restartPracticeSet(h.db,h.user,set.id)]);expect(a.id).toBe(b.id);expect((await h.db.prepare('SELECT COUNT(*) AS n FROM practice_sets').first<{n:number}>())!.n).toBe(2);
+  });
+  it('reviewで過去の版を任意指定して採点できない',async()=>{
+    await seed(1);const old=(await nextExercise(h.db,h.user,'practice', (await createPracticeSet(h.db,h.user,{origin:'school',name:'旧版',count:1})).id)).question!;
+    await insertQuestion(h.db,{...fixtureQuestion(0),question_text:'新しい問題'},0);
+    await expect(submitAnswer(h.db,h.user,{id:id(),contextType:'review',contextId:'review',questionId:old.id,versionId:old.versionId,response:['0'],durationMs:1})).rejects.toThrow('問題を再取得');
+  });
+  it('UIモックの回答を履歴に残しつつ理解度と推薦から除外する',async()=>{
+    const q=await insertQuestion(h.db,{...fixtureQuestion(50),mock:true},50,'ai');
+    await submitAnswer(h.db,h.user,{id:id(),contextType:'review',contextId:'review',questionId:q.id,versionId:q.version,response:['0'],durationMs:1});
+    expect((await history(h.db,h.user)).items).toHaveLength(1);expect((await analytics(h.db,h.user)).summary.answered).toBe(0);expect(await recommendations(h.db,h.user)).toEqual([]);
+  });
+  it('異なるcontextTypeや版で同一送信IDを再利用できない',async()=>{
+    await seed(1);const r=await startRound(h.db,h.user),q=(await nextExercise(h.db,h.user)).question!,input={id:id(),contextType:'round',contextId:r.id,questionId:q.id,versionId:q.versionId,response:['0'],durationMs:1};
+    await submitAnswer(h.db,h.user,input);await expect(submitAnswer(h.db,h.user,{...input,contextType:'review'})).rejects.toThrow('同じ送信ID');await expect(submitAnswer(h.db,h.user,{...input,versionId:'invalid'})).rejects.toThrow('同じ送信ID');
+  });
+});
+
+it('元の問題集から再開しても末端の未回答演習を開き、完了済み末端からは一度で再演習する',async()=>{
+  await seed(1);const original=await createPracticeSet(h.db,h.user,{origin:'school',name:'連続再演習',count:1});
+  const answerSet=async(setId:string)=>{const item=(await practiceResults(h.db,h.user,setId)).items[0];return submitAnswer(h.db,h.user,{id:id(),contextType:'practice',contextId:setId,questionId:item.question_id,versionId:item.version_id,response:['0'],durationMs:1});};
+  await answerSet(original.id);const second=await restartPracticeSet(h.db,h.user,original.id);expect((await restartPracticeSet(h.db,h.user,original.id)).id).toBe(second.id);
+  await answerSet(second.id);const third=await restartPracticeSet(h.db,h.user,original.id);expect(third.id).not.toBe(original.id);expect(third.id).not.toBe(second.id);expect((await nextExercise(h.db,h.user,'practice',third.id)).question).not.toBeNull();expect((await h.db.prepare('SELECT COUNT(*) AS n FROM attempts').first<{n:number}>())!.n).toBe(2);
+});
+it('古い生成leaseで教材マスタや問題の版を上書きしない',async()=>{
+  const initial=await insertQuestion(h.db,fixtureQuestion(75),75,'ai');
+  const stale=await insertQuestion(h.db,{...fixtureQuestion(75),question_text:'古いworkerが遅れて返した問題'},75,'ai',undefined,undefined,{id:'nonexistent-job',lease:'old-lease'});
+  expect((await h.db.prepare('SELECT current_version FROM questions WHERE id=?').bind(initial.id).first<{current_version:string}>())!.current_version).toBe(initial.version);
+  expect(await h.db.prepare('SELECT 1 FROM question_versions WHERE id=?').bind(stale.version).first()).toBeNull();
 });

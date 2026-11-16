@@ -19,17 +19,30 @@ function el<K extends keyof HTMLElementTagNameMap>(tag:K,attrs:Record<string,str
 function append(node:Node,...children:Child[]){for(const child of children){if(child!==null&&child!==undefined&&child!==false)node.appendChild(typeof child==='string'?document.createTextNode(child):child);}}
 function render(...children:Child[]){root.replaceChildren(...children.filter((c):c is Node|string=>c!==null&&c!==undefined&&c!==false));}
 function flash(message:string){document.querySelector('#notice')?.remove();const n=el('p',{id:'notice',class:'message error',role:'alert'},message);root.insertBefore(n,root.firstChild);n.scrollIntoView({block:'nearest'});}
+class APIError extends Error { constructor(public status:number,message:string){super(message);} }
+const localRead=(key:string)=>{try{return localStorage.getItem(key);}catch{return null;}};
+const localWrite=(key:string,value:string)=>{try{localStorage.setItem(key,value);}catch{/* Server drafts remain available when browser storage is full or blocked. */}};
+const localRemove=(key:string)=>{try{localStorage.removeItem(key);}catch{/* Storage may be blocked. */}};
+function nextStudyURL(value:string|null){
+  if(!value||!value.startsWith('/')||/[\\\u0000-\u0020\u007f]/u.test(value))return '/exercise/';
+  try {
+    const url=new URL(value,location.origin);
+    return url.origin===location.origin&&['/','/exercise/','/practice/'].includes(url.pathname)?url.pathname+url.search:'/exercise/';
+  } catch { return '/exercise/'; }
+}
 async function api<T>(path:string,body?:unknown,method=body===undefined?'GET':'POST'):Promise<T>{
   const response=await fetch(`/api${path}`,{method,credentials:'same-origin',headers:{...(body!==undefined?{'Content-Type':'application/json','X-CSRF-Token':csrf}:{} )},...(body!==undefined?{body:JSON.stringify(body)}:{})});
   if(response.status===401){location.assign('/login/');throw new Error('ログインしてください。');}
-  const data=await response.json() as T & {error?:string};if(!response.ok)throw new Error(data.error??'処理を完了できませんでした。');return data as T;
+  let data:T & {error?:string};
+  try {data=await response.json() as T & {error?:string};}catch{if(!response.ok)throw new APIError(response.status,'処理を完了できませんでした。');throw new Error('応答を確認できませんでした。再試行してください。');}
+  if(!response.ok)throw new APIError(response.status,data.error??'処理を完了できませんでした。');return data as T;
 }
 function button(label:string,fn:()=>unknown|Promise<unknown>,primary=false,small=false){
   const b=el('button',{type:'button',class:[primary?'primary':'',small?'small-button':''].filter(Boolean).join(' ')},label);
   b.addEventListener('click',async()=>{b.disabled=true;try{await fn();}catch(error){flash(error instanceof Error?error.message:'処理を完了できませんでした。');}finally{b.disabled=false;}});return b;
 }
 const link=(label:string,href:string,primary=false)=>el('a',{href,class:primary?'button primary':''},label);
-function textField(label:string,value='',multiline=false){const i=multiline?el('textarea',{'aria-label':label,placeholder:label}):el('input',{type:'text','aria-label':label,placeholder:label});i.value=value;return {node:el('div',{class:'field'},i),input:i};}
+function textField(label:string,value='',multiline=false){const i=multiline?el('textarea',{'aria-label':label,placeholder:label}):el('input',{type:'text','aria-label':label,placeholder:label});i.maxLength=5000;i.value=value;return {node:el('div',{class:'field'},i),input:i};}
 function formatText(text:string){
   const node=el('div',{class:'prose'});
   // A small, non-HTML TeX renderer for the imported formula. All glyphs keep
@@ -61,23 +74,24 @@ async function exercise(){
   }else data=await api<Exercise>(`/exercise?type=${encodeURIComponent(type)}${contextId?`&id=${encodeURIComponent(contextId)}`:''}`);
   if(!data.question){
     const progress='progress' in data?data.progress:undefined;
-    render(el('h1',{},progress?.current?.status==='cleared'?'全問クリア':progress&&(progress.counts.pending||progress.counts.needs_review)?'採点を確認':'回答が完了しました'),progress&&el('p',{},`採点待ち ${progress.counts.pending}問　要確認 ${progress.counts.needs_review}問`),el('div',{class:'actions'},link(type==='practice'?'問題集へ':'戻る',type==='practice'?'/practice/':'/',true)));return;
+    render(el('h1',{},progress?.current?.status==='cleared'?'全問クリア':progress&&(progress.counts.pending||progress.counts.needs_review)?'採点を確認':'回答が完了しました'),progress&&el('p',{},`採点待ち ${progress.counts.pending}問　要確認 ${progress.counts.needs_review}問`),el('div',{class:'actions'},type==='practice'&&contextId&&button('もう一度',async()=>{const set=await api<{id:string}>(`/practice/${encodeURIComponent(contextId)}/restart`,{});location.assign(`/exercise/?type=practice&id=${encodeURIComponent(set.id)}`);},true),link(type==='practice'?'問題集へ':'戻る',type==='practice'?'/practice/':'/',type!=='practice')));return;
   }
   const q=data.question;
   if(!q.gradable){render(el('h1',{},'振り返り'),questionBody(q),el('p',{class:'message'},'正答未確認のため採点対象外です。'),link('問題一覧へ','/questions/'));return;}
   const context=data.contextId!,key=`info1:${userId}:${data.contextType}:${context}:${q.id}`,draftKey=`${key}:draft`,pendingKey=`${key}:pending`;
   let response:string|string[]=data.draft?.response as string|string[]??(q.type==='選択式'?[]:''),elapsed=data.draft?.elapsedMs??0;
-  const saved=localStorage.getItem(draftKey);if(saved){try{const local=JSON.parse(saved);if(local.versionId===q.versionId){response=local.response;elapsed=Math.max(elapsed,local.elapsedMs??0);}}catch{localStorage.removeItem(draftKey);}}
-  let pending:{id:string;response:string|string[];durationMs:number}|null=null;
-  try{pending=JSON.parse(localStorage.getItem(pendingKey)??'null');}catch{localStorage.removeItem(pendingKey);}
+  let editedAt=Date.parse(data.draft?.updatedAt??'')||0;
+  const saved=localRead(draftKey);if(saved){try{const local=JSON.parse(saved);if(local.versionId===q.versionId&&(!data.draft||Number(local.editedAt)>editedAt)){response=local.response;elapsed=Math.max(elapsed,local.elapsedMs??0);editedAt=Number(local.editedAt)||0;}}catch{localRemove(draftKey);}}
+  let pending:{id:string;response:string|string[];durationMs:number;versionId?:string}|null=null;
+  try{pending=JSON.parse(localRead(pendingKey)??'null');if(pending?.versionId&&pending.versionId!==q.versionId){pending=null;localRemove(pendingKey);}}catch{localRemove(pendingKey);}
   if(pending)response=pending.response;
   const inputArea=el('div',{}),controls:HTMLButtonElement[]=[];
-  let textarea:HTMLInputElement|HTMLTextAreaElement|undefined,lastTick=performance.now(),timer:ReturnType<typeof setTimeout>|undefined,submitting=false;
-  const tick=()=>{const t=performance.now();if(document.visibilityState==='visible'&&!submitting)elapsed+=Math.max(0,t-lastTick);lastTick=t;};
+  let textarea:HTMLInputElement|HTMLTextAreaElement|undefined,lastTick=performance.now(),timer:ReturnType<typeof setTimeout>|undefined,submitting=false,submitted=false;
+  const tick=()=>{const t=performance.now();if(document.visibilityState==='visible'&&!submitting)elapsed=Math.min(86400000,elapsed+Math.max(0,t-lastTick));lastTick=t;};
   const interval=setInterval(tick,1000);
-  const localSave=()=>{tick();localStorage.setItem(draftKey,JSON.stringify({response,elapsedMs:Math.round(elapsed),versionId:q.versionId}));};
+  const localSave=()=>{tick();localWrite(draftKey,JSON.stringify({response,elapsedMs:Math.round(elapsed),versionId:q.versionId,editedAt}));};
   const save=async()=>{localSave();try{await api('/draft',{contextType:data.contextType,contextId:context,questionId:q.id,versionId:q.versionId,response,elapsedMs:Math.round(elapsed)},'PUT');}catch{/* The local draft remains available. */}};
-  const change=()=>{localSave();clearTimeout(timer);timer=setTimeout(()=>void save(),600);};
+  const change=()=>{editedAt=Date.now();localSave();clearTimeout(timer);timer=setTimeout(()=>void save(),600);};
   if(q.type==='選択式'){
     const list=el('div',{class:'choice-list',role:'group','aria-label':'選択肢'});
     for(const choice of q.choices){const b=el('button',{type:'button',class:'choice','aria-pressed':Array.isArray(response)&&response.includes(choice.id)?'true':'false'},icon('radio','choice-indicator'),el('span',{},choice.text));
@@ -88,25 +102,32 @@ async function exercise(){
   }
   const submit=button('送信',async()=>{
     if(submitting)return;if(Array.isArray(response)?!response.length:!response.trim())throw new Error('回答を入力してください。');
+    if(typeof response==='string'&&response.length>5000)throw new Error('回答は5000文字以内で入力してください。');
     tick();submitting=true;clearTimeout(timer);
-    pending??={id:crypto.randomUUID(),response,durationMs:Math.round(elapsed)};
-    localStorage.setItem(pendingKey,JSON.stringify(pending));
+    pending??={id:crypto.randomUUID(),response,durationMs:Math.min(86400000,Math.round(elapsed)),versionId:q.versionId};
+    localWrite(pendingKey,JSON.stringify(pending));
     controls.forEach(b=>b.disabled=true);if(textarea)textarea.disabled=true;
     try{
       const result=await api<Result>('/answers',{...pending,contextType:data.contextType,contextId:context,questionId:q.id,versionId:q.versionId});
-      localStorage.removeItem(draftKey);localStorage.removeItem(pendingKey);clearInterval(interval);
+      submitted=true;localRemove(draftKey);localRemove(pendingKey);clearInterval(interval);
       const nextURL=data.contextType==='review'?'/questions/':data.contextType==='round'?'/exercise/':`/exercise/?type=practice&id=${encodeURIComponent(context)}`;
       location.assign(`/result/?id=${encodeURIComponent(result.attempt.id)}&next=${encodeURIComponent(nextURL)}`);
+    }catch(error){
+      if(error instanceof APIError&&error.status>=400&&error.status<500&&error.status!==429){
+        pending=null;localRemove(pendingKey);controls.forEach(b=>b.disabled=false);if(textarea)textarea.disabled=false;
+        if(error.status===409){localRemove(draftKey);await exercise();}
+      }
+      throw error;
     }finally{submitting=false;}
   },true);
-  const onPageHide=()=>{if(!submitting)localSave();};window.addEventListener('pagehide',onPageHide);
+  const onPageHide=()=>{if(!submitting&&!submitted)localSave();};window.addEventListener('pagehide',onPageHide);
   disposeExercise=()=>{clearInterval(interval);clearTimeout(timer);window.removeEventListener('pagehide',onPageHide);};
   render(el('div',{class:'exercise-content'},questionBody(q),inputArea,el('div',{class:'exercise-footer'},submit)));
 }
 async function resultPage(){
   const attemptId=params.get('id');if(!attemptId)throw new Error('回答を選択してください。');
   const r=await api<Result>(`/results/${encodeURIComponent(attemptId)}`),evaluation=r.attempt.evaluation_data as {reason:string;improvement:string};
-  const next=params.get('next'),nextURL=next?.startsWith('/')&&!next.startsWith('//')?next:'/exercise/';
+  const nextURL=nextStudyURL(params.get('next'));
   const response=Array.isArray(r.attempt.response)?r.question.choices.filter(c=>(r.attempt.response as string[]).includes(c.id)).map(c=>c.text).join('\n'):String(r.attempt.response);
   const answerBlock=(label:string,value:string)=>el('section',{class:'result-answer'},el('h2',{},label),formatText(value));
   const symbol=r.attempt.verdict==='correct'?'correct':r.attempt.verdict==='incorrect'?'incorrect':r.attempt.verdict==='pending'?'pending':'review';
