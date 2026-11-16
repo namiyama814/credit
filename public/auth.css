@@ -3,3 +3,5 @@
 button{transition:background-color 120ms ease;text-decoration:none}button:hover{text-decoration:none}@media(hover:hover){button:hover:not(:disabled){background:#383838}.secondary:hover:not(:disabled){background:#f2f2f2}}@media(prefers-reduced-motion:reduce){button{transition:none}}
 
 main.offline-main{min-height:100svh;max-width:none;margin:0;display:grid;place-content:center;gap:24px;text-align:center}.offline-main h1{margin:0;font-size:24px}
+
+input[type=checkbox]{appearance:none;flex-shrink:0;border:1px solid #252525;border-radius:4px;background:#ffffff}input[type=checkbox]:checked{background:#252525 url("/icons/check.svg") center/18px 18px no-repeat}

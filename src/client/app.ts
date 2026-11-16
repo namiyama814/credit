@@ -1,3 +1,4 @@
+import { icon } from './icons';
 import type { nextExercise, getResult } from '../server/service';
 
 type Exercise=Awaited<ReturnType<typeof nextExercise>>;
@@ -79,7 +80,7 @@ async function exercise(){
   const change=()=>{localSave();clearTimeout(timer);timer=setTimeout(()=>void save(),600);};
   if(q.type==='選択式'){
     const list=el('div',{class:'choice-list',role:'group','aria-label':'選択肢'});
-    for(const choice of q.choices){const b=el('button',{type:'button',class:'choice','aria-pressed':Array.isArray(response)&&response.includes(choice.id)?'true':'false'},el('span',{class:'choice-indicator','aria-hidden':'true'}),el('span',{},choice.text));
+    for(const choice of q.choices){const b=el('button',{type:'button',class:'choice','aria-pressed':Array.isArray(response)&&response.includes(choice.id)?'true':'false'},icon('radio','choice-indicator'),el('span',{},choice.text));
       b.disabled=!!pending;b.addEventListener('click',()=>{response=[choice.id];for(const other of controls)other.setAttribute('aria-pressed','false');b.setAttribute('aria-pressed','true');change();});controls.push(b);append(list,b);}
     append(inputArea,list);
   }else{
@@ -108,8 +109,8 @@ async function resultPage(){
   const next=params.get('next'),nextURL=next?.startsWith('/')&&!next.startsWith('//')?next:'/exercise/';
   const response=Array.isArray(r.attempt.response)?r.question.choices.filter(c=>(r.attempt.response as string[]).includes(c.id)).map(c=>c.text).join('\n'):String(r.attempt.response);
   const answerBlock=(label:string,value:string)=>el('section',{class:'result-answer'},el('h2',{},label),formatText(value));
-  const symbol=r.attempt.verdict==='correct'?'○':r.attempt.verdict==='incorrect'?'×':r.attempt.verdict==='pending'?'…':'?';
-  render(el('div',{class:'result-status'},el('span',{class:'result-symbol','aria-hidden':'true'},symbol),el('h1',{class:'result-label'},verdicts[r.attempt.verdict])),
+  const symbol=r.attempt.verdict==='correct'?'correct':r.attempt.verdict==='incorrect'?'incorrect':r.attempt.verdict==='pending'?'pending':'review';
+  render(el('div',{class:'result-status'},icon(symbol,'result-symbol'),el('h1',{class:'result-label'},verdicts[r.attempt.verdict])),
     el('div',{class:'result-answers'},answerBlock('あなたの回答',response),answerBlock(String(r.answerKind),r.correctAnswer)),
     r.explanation&&el('section',{class:'result-explanation'},el('h2',{},'解説'),formatText(r.explanation)),
     r.attempt.method!=='rule'&&evaluation.reason&&el('section',{class:'result-explanation'},el('h2',{},'参考評価'),formatText(evaluation.reason),evaluation.improvement&&formatText(evaluation.improvement)),
