@@ -8,6 +8,8 @@ import { ensureUser, stmt } from './service';
 export type Bindings=Env&{OAUTH_PROVIDER:OAuthHelpers};
 export type Variables={userId:string;csrf:string};
 export type AppContext=Context<{Bindings:Bindings;Variables:Variables}>;
+// OAuth grants use colon-delimited IDs; keep the D1 identity unchanged in token props.
+const oauthUserId=(internalUserId:string)=>internalUserId.replace(/^github:(\d+)$/u,'github-$1');
 const cookieName=(c:AppContext)=>c.env.APP_MODE==='production'?'__Host-info1_session':'info1_session';
 const secure=(c:AppContext)=>c.env.APP_MODE==='production';
 export const escapeHTML=(s:string)=>s.replace(/[&<>"']/gu,c=>`&#${c.charCodeAt(0)};`);
@@ -79,7 +81,7 @@ export async function githubCallback(c:AppContext){
   }
   const user=await exchangeGithub(c,code,upstream.data.verifier);
   await createSession(c,user.userId,user.login);
-  const {redirectTo}=await oauth.completeAuthorization({request:upstream.request,userId:user.userId,metadata:{},scope:upstream.request.scope,props:{userId:user.userId,scopes:upstream.request.scope}});
+  const {redirectTo}=await oauth.completeAuthorization({request:upstream.request,userId:oauthUserId(user.userId),metadata:{},scope:upstream.request.scope,props:{userId:user.userId,scopes:upstream.request.scope}});
   for(const [key,value] of upstream.headers)if(key.toLowerCase()==='set-cookie')c.header('Set-Cookie',value,{append:true});
   return c.redirect(redirectTo);
 }
@@ -107,7 +109,7 @@ export async function authorizePOST(c:AppContext){
   const approved=await oauth.approveConsent(c.req.raw,handle,{scope});
   const session=await getSession(c);
   if(session&&isOwnerSession(session,c.env)){
-    const {redirectTo}=await oauth.completeAuthorization({request:approved.request,userId:session.user_id,metadata:{},scope:approved.request.scope,props:{userId:session.user_id,scopes:approved.request.scope}});
+    const {redirectTo}=await oauth.completeAuthorization({request:approved.request,userId:oauthUserId(session.user_id),metadata:{},scope:approved.request.scope,props:{userId:session.user_id,scopes:approved.request.scope}});
     approved.headers.set('Location',redirectTo);return new Response(null,{status:302,headers:approved.headers});
   }
   const v=verifier(),upstream=await oauth.beginUpstream(approved.request,{data:{verifier:v},headers:approved.headers});
