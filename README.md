@@ -91,6 +91,10 @@ Service Workerは公開された画面用のJS・CSS、フォント、アイコ�
 MCP SDKとローカルD1で、12問の段階保存・再送・検算・採用・回答まで検証します。Workers AIが呼ばれないこと、通常周回が変わらないことも確認します。PlaywrightはOAuth・権限拒否・状態表示・演習を一時DBで検証します。
 
 
+### 数式の表示
+
+問題文・選択肢・参考解答・解説はKaTeXでTeX数式を表示します。文中は `$2^3=8$` または `\(\frac{1}{2}\)`、独立した数式は `$$...$$` または `\[...\]` で囲みます。コードブロックは変換しません。本文はNoto Sans JP、数式はKaTeXのフォントを使用し、ライブラリとフォントはアプリから配信します。保存する原文・回答・採点規則は変更しません。
+
 ## 本番への配置
 
 本番認証の設定とデプロイは保留中です。想定URLは `https://info1-study.namiyama814.workers.dev`、GitHub OAuth Appのコールバックは `https://info1-study.namiyama814.workers.dev/auth/github/callback` です。

@@ -1,3 +1,4 @@
+import {formatText} from './math';
 import { icon } from './icons';
 import type { nextExercise, getResult, practiceResults } from '../server/service';
 
@@ -44,14 +45,6 @@ function button(label:string,fn:()=>unknown|Promise<unknown>,primary=false,small
 }
 const link=(label:string,href:string,primary=false)=>el('a',{href,class:primary?'button primary':''},label);
 function textField(label:string,value='',multiline=false){const i=multiline?el('textarea',{'aria-label':label,placeholder:label}):el('input',{type:'text','aria-label':label,placeholder:label});i.maxLength=5000;i.value=value;return {node:el('div',{class:'field'},i),input:i};}
-function formatText(text:string){
-  const node=el('div',{class:'prose'});
-  // A small, non-HTML TeX renderer for the imported formula. All glyphs keep
-  // Noto Sans JP; no foreign math fonts or unsanitized HTML are introduced.
-  const normalized=text.replace(/\\\(/gu,'').replace(/\\\)/gu,'').replace(/\\times/gu,'×');
-  const parts=normalized.split(/(\^\{[^{}]+\})/gu);
-  for(const part of parts){const m=part.match(/^\^\{([^{}]+)\}$/u);append(node,m?el('sup',{},m[1]):part);}return node;
-}
 function questionBody(q:SafeQuestion){
   const n=el('div',{class:'question'}),codes=Array.isArray(q.codeBlocks)?q.codeBlocks.filter((v):v is string=>typeof v==='string'):[];
   let remaining=q.text;
@@ -95,7 +88,7 @@ async function exercise(){
   const change=()=>{editedAt=Date.now();localSave();clearTimeout(timer);timer=setTimeout(()=>void save(),600);};
   if(q.type==='選択式'){
     const list=el('div',{class:'choice-list',role:'group','aria-label':'選択肢'});
-    for(const choice of q.choices){const b=el('button',{type:'button',class:'choice','aria-pressed':Array.isArray(response)&&response.includes(choice.id)?'true':'false'},icon('radio','choice-indicator'),el('span',{},choice.text));
+    for(const choice of q.choices){const b=el('button',{type:'button',class:'choice','aria-pressed':Array.isArray(response)&&response.includes(choice.id)?'true':'false'},icon('radio','choice-indicator'),formatText(choice.text));
       b.disabled=!!pending;b.addEventListener('click',()=>{response=[choice.id];for(const other of controls)other.setAttribute('aria-pressed','false');b.setAttribute('aria-pressed','true');change();});controls.push(b);append(list,b);}
     append(inputArea,list);
   }else{
@@ -168,8 +161,8 @@ async function practicePage(){
       button('状態を更新',practicePage),
       canManage&&retry&&button('作成待ちに戻す',async()=>{await api(`/practice/${encodeURIComponent(setId)}/retry`,{});await practicePage();}),
       ...p.items.map((item,i)=>el('section',{class:'practice-question'},el('h2',{},`問${i+1}`),formatText(item.question.text),
-        ...item.question.choices.map(c=>el('p',{},c.text)),
-        'correctAnswer' in item&&item.correctAnswer?el('p',{},`参考解答 ${item.correctAnswer}`):null,
+        ...item.question.choices.map(c=>formatText(c.text)),
+        'correctAnswer' in item&&item.correctAnswer?formatText(`参考解答 ${item.correctAnswer}`):null,
         'explanation' in item&&item.explanation?formatText(String(item.explanation)):null,
         el('p',{},'検証済み'))),
       p.set.status==='draft'&&(canManage?button('内容を確認して採用',async()=>{await api(`/practice/${encodeURIComponent(setId)}/adopt`,{});await practicePage();},true):el('p',{},'ChatGPTで内容を確認して採用')),);

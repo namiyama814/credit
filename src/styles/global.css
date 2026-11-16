@@ -18,3 +18,5 @@ body[data-page=exercise] .main{min-height:100svh;margin:0 auto;padding-top:32px;
 input:not([type=checkbox]):not([type=radio]):not([type=file]),textarea,select{font-size:16px}
 
 .practice-state{display:block;font-size:.85rem}.practice-question{margin-block:24px;padding-block:16px;border-top:1px solid var(--ink)}
+
+.prose{min-width:0}.prose .katex{white-space:normal;color:inherit}.prose .katex-display{max-width:100%;overflow-x:auto;overflow-y:hidden;padding:4px 0;margin:12px 0}.choice>.prose{flex:1;min-width:0}.prose .katex .base{white-space:nowrap}
