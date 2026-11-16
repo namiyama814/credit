@@ -1,3 +1,4 @@
+import {PracticeQuestion} from './practice-content';
 import { z } from 'zod';
 
 export const SourceQuestion = z.looseObject({
@@ -42,6 +43,8 @@ export const PracticeInput = z.object({
   count: z.number().int().min(1).max(20).optional(),
   tags: z.array(z.string().max(60)).max(12).default([]),
   instructions: z.string().trim().max(2000).optional(),
+  setId: z.uuid().optional(),
+  questions: z.array(PracticeQuestion).max(20).optional(),
   questionIds: z.array(z.string().max(160)).max(167).optional(),
 });
 export type PracticeConditions = z.infer<typeof PracticeInput>;

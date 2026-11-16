@@ -1,5 +1,5 @@
 import { icon } from './icons';
-import type { nextExercise, getResult } from '../server/service';
+import type { nextExercise, getResult, practiceResults } from '../server/service';
 
 type Exercise=Awaited<ReturnType<typeof nextExercise>>;
 type Result=Awaited<ReturnType<typeof getResult>>;
@@ -7,7 +7,8 @@ type SafeQuestion=Result['question'];
 type Child=Node|string|null|undefined|false;
 const root=document.querySelector<HTMLElement>('#app')!;
 const page=document.body.dataset.page!;
-let csrf='',userId='';
+let csrf='',userId='',canManage=false;
+let practiceRefresh:ReturnType<typeof setTimeout>|undefined;
 const params=new URLSearchParams(location.search);
 const verdicts:Record<string,string>={correct:'正解',incorrect:'不正解',pending:'採点待ち',needs_review:'要確認',unanswered:'未回答'};
 function el<K extends keyof HTMLElementTagNameMap>(tag:K,attrs:Record<string,string|number|boolean>={},...children:Child[]):HTMLElementTagNameMap[K]{
@@ -138,14 +139,51 @@ async function resultPage(){
     el('div',{class:'result-footer'},r.attempt.verdict==='pending'&&button('採点結果を更新',resultPage),link('次の問題へ',nextURL,true)));
 
 }
+type Practice=Awaited<ReturnType<typeof practiceResults>>;
+const practiceStatus:Record<string,string>={generating:'生成中',draft:'採用待ち',ready:'利用可能',failed:'生成失敗'};
+function practiceState(status:string,jobs:{kind:string;status:string|null;phase:string|null;last_error?:string|null}[]){
+  const job=jobs.find(j=>j.kind==='generate');
+  if(status==='generating'){
+    if(job?.status==='deferred')return '生成保留';
+    if(job?.status==='failed')return '生成失敗';
+    if(job?.status==='pending'&&job.last_error)return '再試行待ち';
+    if(job?.phase==='verifying')return '検証待ち';
+  }
+  return practiceStatus[status]??status;
+}
 async function practicePage(){
-  const setId=params.get('id');if(setId){location.replace(`/exercise/?type=practice&id=${encodeURIComponent(setId)}`);return;}
-  const sets=await api<{id:string;name:string;status:string}[]>('/practice');
-  const ready=sets.filter(s=>s.status==='ready');
-  render(ready.length?el('ul',{class:'collection-list',role:'list'},...ready.map(s=>el('li',{},el('a',{class:'collection-item',href:`/exercise/?type=practice&id=${encodeURIComponent(s.id)}`},el('span',{},s.name),icon('chevron','collection-chevron'))))):el('div',{class:'practice-empty'},el('p',{},'問題集がありません')));
+  clearTimeout(practiceRefresh);
+  const setId=params.get('id');
+  if(setId){
+    const p=await api<Practice>(`/practice/${encodeURIComponent(setId)}`);
+    if(p.set.status==='ready'){location.replace(`/exercise/?type=practice&id=${encodeURIComponent(setId)}`);return;}
+    const job=p.jobs.find(j=>j.kind==='generate');
+    const retry=p.set.status==='failed';
+    render(link('問題集へ','/practice/'),el('h1',{},p.set.name),
+      el('p',{role:'status'},practiceState(p.set.status,p.jobs)),
+      el('p',{},`検証済み ${p.progress.verified} / ${p.progress.total}問`),
+      p.set.status==='generating'&&el('p',{},'ChatGPTで残りの問題を作成'),
+      !!job?.last_error&&el('p',{},String(job.last_error)),
+      job?.status==='deferred'&&el('p',{},`再開予定 ${new Date(String(job.next_at)).toLocaleString('ja-JP')}`),
+      button('状態を更新',practicePage),
+      canManage&&retry&&button('作成待ちに戻す',async()=>{await api(`/practice/${encodeURIComponent(setId)}/retry`,{});await practicePage();}),
+      ...p.items.map((item,i)=>el('section',{class:'practice-question'},el('h2',{},`問${i+1}`),formatText(item.question.text),
+        ...item.question.choices.map(c=>el('p',{},c.text)),
+        'correctAnswer' in item&&item.correctAnswer?el('p',{},`参考解答 ${item.correctAnswer}`):null,
+        'explanation' in item&&item.explanation?formatText(String(item.explanation)):null,
+        el('p',{},'検証済み'))),
+      p.set.status==='draft'&&(canManage?button('内容を確認して採用',async()=>{await api(`/practice/${encodeURIComponent(setId)}/adopt`,{});await practicePage();},true):el('p',{},'ChatGPTで内容を確認して採用')),);
+    if(p.set.status==='generating')practiceRefresh=setTimeout(()=>void practicePage().catch(e=>flash(e.message)),10000);
+    return;
+  }
+  const sets=await api<{id:string;name:string;status:string;generated:number;total:number;phase:string|null;job_status:string|null}[]>('/practice');
+  render(sets.length?el('ul',{class:'collection-list',role:'list'},...sets.map(s=>el('li',{},
+    el('a',{class:'collection-item',...(s.status==='ready'?{'aria-label':s.name}:{}),href:s.status==='ready'?`/exercise/?type=practice&id=${encodeURIComponent(s.id)}`:`/practice/?id=${encodeURIComponent(s.id)}`},
+      el('span',{},s.name,el('small',{class:'practice-state'},s.status==='ready'?'利用可能':`${practiceState(s.status,[{kind:'generate',status:s.job_status,phase:s.phase}])}　検証済み ${s.generated} / ${s.total}問`)),icon('chevron','collection-chevron'))))):el('div',{class:'practice-empty'},el('p',{},'問題集がありません')));
+  if(sets.some(s=>s.status==='generating'))practiceRefresh=setTimeout(()=>void practicePage().catch(e=>flash(e.message)),10000);
 }
 async function main(){
-  const session=await api<{userId:string;csrf:string}>('/me');csrf=session.csrf;userId=session.userId;
+  const session=await api<{userId:string;csrf:string;canManage?:boolean}>('/me');csrf=session.csrf;userId=session.userId;canManage=session.canManage===true;
   const routes:Record<string,()=>Promise<void>>={dashboard,exercise,result:resultPage,practice:practicePage};
   await (routes[page]??dashboard)();
 }

@@ -1,4 +1,5 @@
-import { AnswerInput, PracticeInput, SourceQuestion, AppError, type Question, type Evaluation, type GradingRule, type Answer, now, id, hash, deriveRule, deriveTags, gradeRule, safeQuestion, parseJSON } from './domain';
+import {validatePracticeQuestion} from './practice-content';
+import { AnswerInput, PracticeInput, SourceQuestion, AppError, type Question, type PracticeConditions, type Evaluation, type GradingRule, type Answer, now, id, hash, deriveRule, deriveTags, gradeRule, safeQuestion, parseJSON } from './domain';
 
 export interface VersionRow { id: string; question_id: string; payload: string; grading: string; tags: string; gradable: number; origin: string; }
 export interface AttemptRow { id: string; user_id: string; context_type: string; context_id: string; question_id: string; version_id: string; response: string; duration_ms: number; created_at: string; verdict: string; score: number | null; evaluation_data: string; method: string; evaluation_seq: number; }
@@ -12,7 +13,7 @@ export async function getVersion(db: D1Database, questionId: string, versionId?:
   if (!row) throw new AppError(404, '問題が見つかりません。');
   return row;
 }
-export async function insertQuestion(db: D1Database, raw: unknown, position: number, origin = 'school', ruleOverride?: GradingRule, tagsOverride?: string[], jobGuard?:{id:string;lease:string}) {
+async function prepareQuestion(db: D1Database, raw: unknown, position: number, origin = 'school', ruleOverride?: GradingRule, tagsOverride?: string[], jobGuard?:{id:string;lease:string}) {
   const q = SourceQuestion.parse(raw);
   const rule = ruleOverride ?? deriveRule(q);
   const tags = tagsOverride ?? deriveTags(q);
@@ -23,12 +24,16 @@ export async function insertQuestion(db: D1Database, raw: unknown, position: num
   const created = now();
   const guard=jobGuard?" WHERE EXISTS(SELECT 1 FROM jobs WHERE id=? AND status='running' AND lease_until=?)":' WHERE 1';
   const guardedArgs=jobGuard?[jobGuard.id,jobGuard.lease]:[];
-  await db.batch([
+  const statements=[
     stmt(db, 'INSERT INTO questions(id,origin,unit,kind,current_version,position,created_at) SELECT ?,?,?,?,?,?,?'+guard+' ON CONFLICT(id) DO UPDATE SET current_version=excluded.current_version,unit=excluded.unit,kind=excluded.kind,position=excluded.position WHERE questions.origin=excluded.origin',q.id,origin,q.unit_name,q.question_type,version,position,created,...guardedArgs),
     stmt(db, 'INSERT OR IGNORE INTO question_versions(id,question_id,content_hash,payload,grading,tags,gradable,created_at) SELECT ?,?,?,?,?,?,?,?'+guard,version,q.id,contentHash,payload,JSON.stringify(rule),JSON.stringify(tags),Number(q.answer_verified && rule.type !== 'none'),created,...guardedArgs),
     ...imageRows.filter((r):r is {path:string;content_hash:string}=>!!r).map(r=>stmt(db,'INSERT OR IGNORE INTO version_assets SELECT ?,?,?'+guard,version,r.path,r.content_hash,...guardedArgs)),
-  ]);
-  return { id: q.id, version, tags, rule, gradable: q.answer_verified && rule.type !== 'none' };
+  ];
+  return { id: q.id, version, tags, rule, gradable: q.answer_verified && rule.type !== 'none',statements };
+}
+export async function insertQuestion(db:D1Database,raw:unknown,position:number,origin='school',ruleOverride?:GradingRule,tagsOverride?:string[],jobGuard?:{id:string;lease:string}){
+  const {statements,...result}=await prepareQuestion(db,raw,position,origin,ruleOverride,tagsOverride,jobGuard);
+  await db.batch(statements);return result;
 }
 export async function listQuestions(db: D1Database, filter: { unit?: string; type?: string; tag?: string; origin?: string; state?: string; cursor?: string; limit?: number; query?: string; minAccuracy?:number; maxAccuracy?:number } = {}, userId?: string) {
   const rows = await db.prepare('SELECT v.*,q.origin FROM questions q JOIN question_versions v ON v.id=q.current_version ORDER BY q.position,q.id').all<VersionRow>();
@@ -249,8 +254,9 @@ export async function learningContext(db:D1Database,userId:string){
   return {examDate:'2027-01-21',timezone:'Asia/Tokyo',asOf:now(),progress:{current:progress.current,counts:progress.counts,next:progress.next,unresolved:progress.items.filter(i=>i.verdict==='pending'||i.verdict==='needs_review').slice(0,10)},analysis:{summary:analysis.summary,units:analysis.units,weakTopics:analysis.topics.slice(0,8),masteryTimeline:analysis.masteryTimeline.slice(-7)},recent:recent.items,recommended,aiIsReference:true};
 }
 export async function createPracticeSet(db:D1Database,userId:string,raw:unknown){
-  const c=PracticeInput.parse(raw),count=c.count??(c.origin==='school'&&c.questionIds?.length?c.questionIds.length:c.mode==='mock'?20:10),setId=id(),t=now();
+  const c=PracticeInput.parse(raw),count=c.count??(c.origin==='ai'&&c.questions?.length?Math.max(...c.questions.map(q=>q.position)):c.origin==='school'&&c.questionIds?.length?c.questionIds.length:c.mode==='mock'?20:10),setId=c.setId??id(),t=now();
   if(c.origin==='school'){
+    if(c.questions?.length)throw new AppError(400,'学校教材の問題集には独自問題を追加できません。');
     const data=await listQuestions(db,{origin:'school',limit:100});
     const more=data.nextCursor?(await listQuestions(db,{origin:'school',limit:100,cursor:data.nextCursor})).items:[];
     let qs=[...data.items,...more].filter(q=>q.gradable&&(!c.questionIds||c.questionIds.includes(q.id))&&(!c.tags.length||c.tags.some(t=>q.tags.includes(t))));
@@ -259,23 +265,61 @@ export async function createPracticeSet(db:D1Database,userId:string,raw:unknown)
     qs=qs.slice(0,count);
     await db.batch([stmt(db,"INSERT INTO practice_sets VALUES(?,?,?,?,?,'ready',?,?)",setId,userId,c.name,c.mode,'school',JSON.stringify(c),t),...qs.map((q,i)=>stmt(db,"INSERT INTO practice_items VALUES(?,?,?,?,?)",setId,q.id,q.versionId,i,JSON.stringify({source:'verified_school'})))]);
   }else{
-    await db.batch([stmt(db,"INSERT INTO practice_sets VALUES(?,?,?,?,?,'generating',?,?)",setId,userId,c.name,c.mode,'ai',JSON.stringify({...c,count}),t),stmt(db,"INSERT INTO jobs(id,user_id,kind,payload,status,next_at,created_at,updated_at) VALUES(?,?,'generate',?,'pending',?,?,?)",id(),userId,JSON.stringify({setId,conditions:{...c,count}}),t,t,t)]);
+    const {questions:submitted=[],...metadata}=c;
+    const existing=await stmt(db,'SELECT * FROM practice_sets WHERE id=?',setId).first<{user_id:string;origin:string;status:string;conditions:string;created_at:string}>();
+    if(existing&&(existing.user_id!==userId||existing.origin!=='ai'))throw new AppError(404,'問題集が見つかりません。');
+    const target=existing?parseJSON<PracticeConditions&{count:number}>(existing.conditions).count:count;
+    if(c.count!==undefined&&target!==c.count)throw new AppError(409,'予定の問題数は変更できません。');
+    const current=(await stmt(db,'SELECT i.position,i.version_id,v.payload FROM practice_items i JOIN question_versions v ON v.id=i.version_id WHERE set_id=?',setId).all<{position:number;version_id:string;payload:string}>()).results;
+    const positions=new Set<number>();const texts=new Map(current.map(i=>[parseJSON<Question>(i.payload).question_text.replace(/\s/gu,''),i.position+1]));
+    const commands:D1PreparedStatement[]=[];
+    for(const g of submitted){
+      if(g.position>target||positions.has(g.position))throw new AppError(400,'問題の位置が重複または範囲外です。');positions.add(g.position);
+      let verification;try{verification=validatePracticeQuestion(g);}catch(e){throw new AppError(400,e instanceof Error?e.message:'問題を検証してください。');}
+      const normalized=g.text.replace(/\s/gu,'');const duplicate=texts.get(normalized);
+      if(duplicate!==undefined&&duplicate!==g.position)throw new AppError(409,'同じ問題が重複しています。');texts.set(normalized,g.position);
+      const choices=g.choices.map((v,i)=>`${'アイウエオカ'[i]}．${v}`),answer=g.type==='選択式'?choices[g.correctChoice!]:g.answer;
+      const q=SourceQuestion.parse({id:`ai-${setId}-${g.position}`,source_type:'確認テスト',unit_name:g.unit,lesson_name:'AI独自問題',source_url:`https://info1-study.namiyama814.workers.dev/practice/?id=${setId}`,question_number:`Q${g.position}`,question_type:g.type,question_text:g.text,choices,correct_answer:`「${answer}」。`,explanation:g.explanation,image_paths:[],answer_verified:true,answer_kind:g.type==='論述式'?'解答例':'正答',generation:{source:'mcp_client',createdAt:existing?.created_at??t}});
+      const rule:GradingRule={type:g.type==='選択式'?'choice':g.type==='記述式'?'short':'essay',accepted:g.type==='選択式'?[String(g.correctChoice)]:[g.answer],normalizeWidth:true,caseSensitive:true,version:'generated-v1'};
+      const old=current.find(i=>i.position===g.position-1);
+      if(old){
+        const saved=parseJSON<Question>(old.payload);
+        if(saved.question_text!==q.question_text||saved.correct_answer!==q.correct_answer||saved.explanation!==q.explanation||JSON.stringify(saved.choices)!==JSON.stringify(q.choices)||saved.question_type!==q.question_type)throw new AppError(409,'保存済みの問題は上書きできません。');
+        continue;
+      }
+      if(existing?.status==='ready')throw new AppError(409,'採用済みの問題集には追加できません。');
+      const stored=await prepareQuestion(db,q,100000+g.position-1,'ai',rule,g.concepts);
+      commands.push(...stored.statements,stmt(db,'INSERT INTO practice_items VALUES(?,?,?,?,?)',setId,q.id,stored.version,g.position-1,JSON.stringify(verification)));
+    }
+    await db.batch([
+      ...(existing?[]:[stmt(db,"INSERT INTO practice_sets VALUES(?,?,?,?,?,'generating',?,?)",setId,userId,c.name,c.mode,'ai',JSON.stringify({...metadata,count:target}),t)]),
+      // Recheck status inside the transaction; racing submissions cannot alter ready sets.
+      stmt(db,"SELECT CASE WHEN EXISTS(SELECT 1 FROM practice_sets WHERE id=? AND user_id=? AND (status!='ready' OR ?=0)) THEN 1 ELSE json('practice_conflict') END",setId,userId,commands.length),
+      ...commands,
+      stmt(db,"UPDATE practice_sets SET status=CASE WHEN (SELECT COUNT(*) FROM practice_items WHERE set_id=?)>=? THEN 'draft' ELSE 'generating' END WHERE id=? AND user_id=? AND status!='ready'",setId,target,setId,userId),
+      stmt(db,"UPDATE jobs SET status='done',lease_until=NULL,last_error=NULL,updated_at=? WHERE kind='generate' AND user_id=? AND json_extract(payload,'$.setId')=?",now(),userId,setId),
+    ]);
+    const saved=await stmt(db,'SELECT status,(SELECT COUNT(*) FROM practice_items WHERE set_id=?) AS generated FROM practice_sets WHERE id=?',setId,setId).first<{status:string;generated:number}>();
+    console.info(JSON.stringify({event:'practice_saved',setId,generated:saved!.generated,total:target,status:saved!.status,source:'mcp_client'}));
+    return {id:setId,status:saved!.status,generated:saved!.generated,total:target,nextAction:saved!.status==='generating'?'ChatGPTで残りの問題を作成し、同じsetIdと位置を指定してquestionsを送信してください。':saved!.status==='draft'?'get_practice_set_resultsで内容を確認し、ユーザーの採用確認後にapprove_practice_setを実行してください。':null};
   }
-  return {id:setId,status:c.origin==='ai'?'generating':'ready'};
+  return {id:setId,status:'ready'};
 }
+
 export async function practiceResults(db:D1Database,userId:string,setId:string){
-  const set=await stmt(db,'SELECT * FROM practice_sets WHERE id=? AND user_id=?',setId,userId).first<{id:string;status:string;conditions:string}>();
+  const set=await stmt(db,'SELECT * FROM practice_sets WHERE id=? AND user_id=?',setId,userId).first<{id:string;name:string;origin:string;status:string;conditions:string}>();
   if(!set)throw new AppError(404,'問題集が見つかりません。');
   const items=(await stmt(db,"SELECT i.*,COALESCE(a.verdict,'unanswered') AS verdict,a.id AS attempt_id FROM practice_items i LEFT JOIN effective_attempts a ON a.context_type='practice' AND a.context_id=i.set_id AND a.question_id=i.question_id AND a.user_id=? WHERE i.set_id=? ORDER BY i.position",userId,setId).all<{question_id:string;version_id:string;verification:string;verdict:string;attempt_id:string|null}>()).results;
-  const questions=await Promise.all(items.map(async i=>{const v=await getVersion(db,i.question_id,i.version_id),q=parseJSON<Question>(v.payload);return {...i,verification:parseJSON(i.verification),question:safeQuestion(q,v.id,parseJSON<string[]>(v.tags),v.origin),...(set.status==='draft'?{correctAnswer:q.correct_answer,explanation:q.explanation}:{} )};}));
-  const jobs=(await stmt(db,"SELECT id,status,kind,last_error,next_at FROM jobs WHERE user_id=? AND (json_extract(payload,'$.setId')=?) ORDER BY created_at DESC",userId,setId).all()).results;
-  return {set:{...set,conditions:parseJSON(set.conditions)},items:questions,jobs};
+  const questions=await Promise.all(items.map(async i=>{const v=await getVersion(db,i.question_id,i.version_id),q=parseJSON<Question>(v.payload);return {...i,verification:parseJSON(i.verification),question:safeQuestion(q,v.id,parseJSON<string[]>(v.tags),v.origin),...(['generating','draft','failed'].includes(set.status)?{correctAnswer:q.correct_answer,explanation:q.explanation}:{} )};}));
+  const jobs=(await stmt(db,"SELECT id,status,kind,last_error,next_at,tries,lease_until,updated_at,CASE WHEN json_type(payload,'$.candidate')='object' THEN 'verifying' ELSE 'generating' END AS phase FROM jobs WHERE user_id=? AND (json_extract(payload,'$.setId')=?) ORDER BY created_at DESC",userId,setId).all<{id:string;status:string;kind:string;last_error:string|null;next_at:string;tries:number;lease_until:string|null;updated_at:string;phase:string}>()).results;
+  const conditions=parseJSON<PracticeConditions&{count?:number}>(set.conditions);
+  return {set:{...set,conditions},items:questions,jobs,progress:{generated:items.length,verified:items.filter(i=>(parseJSON<{valid?:boolean}>(i.verification)).valid).length,total:conditions.count??items.length}};
 }
 
 export async function approvePracticeSet(db:D1Database,userId:string,setId:string){
   const p=await practiceResults(db,userId,setId);
   if(p.set.status==='ready')return {adopted:true};
-  if(p.set.status!=='draft'||!p.items.length||p.items.some(i=>!(i.verification as {valid?:boolean}).valid))throw new AppError(409,'検証済みの問題集を確認してください。');
+  if(p.set.status!=='draft'||!p.items.length||p.items.some(i=>!(i.verification as {valid?:boolean}).valid)||p.jobs.some(j=>['pending','running','deferred'].includes(String(j.status))))throw new AppError(409,'検証済みの問題集を確認してください。');
   await stmt(db,"UPDATE practice_sets SET status='ready' WHERE id=? AND user_id=? AND status='draft'",setId,userId).run();
   return {adopted:true};
 }
@@ -295,4 +339,15 @@ export async function restartPracticeSet(db:D1Database,userId:string,setId:strin
   ]);
   const saved=await stmt(db,"SELECT id FROM practice_sets WHERE user_id=? AND json_extract(conditions,'$.repeatedFrom')=?",userId,setId).first<{id:string}>();
   return {id:saved!.id,status:'ready'};
+}
+
+// Legacy job retries request client content; Workers AI never generates questions.
+export async function retryPracticeSet(db:D1Database,userId:string,setId:string){
+ const p=await practiceResults(db,userId,setId);
+ if(p.set.status!=='failed')throw new AppError(409,'再実行できる状態ではありません。');
+ await db.batch([
+  stmt(db,"UPDATE jobs SET status='done',lease_until=NULL,updated_at=? WHERE kind='generate' AND user_id=? AND json_extract(payload,'$.setId')=?",now(),userId,setId),
+  stmt(db,"UPDATE practice_sets SET status='generating' WHERE id=? AND user_id=? AND status='failed'",setId,userId),
+ ]);
+ return {queued:false,nextAction:'ChatGPTで残りの問題を作成し、create_practice_setに同じsetIdとquestionsを送信してください。'};
 }

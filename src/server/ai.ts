@@ -1,6 +1,6 @@
 import { z } from 'zod';
-import { AIGrading, SourceQuestion, type Evaluation, type Question, type GradingRule, type PracticeConditions, now, parseJSON } from './domain';
-import { stmt, getVersion, recordEvaluation, analytics, insertQuestion, type AttemptRow } from './service';
+import { AIGrading, type Evaluation, type Question, now, parseJSON } from './domain';
+import { stmt, getVersion, recordEvaluation, type AttemptRow } from './service';
 
 export const PROMPT_VERSION='essay-v3-json-object';
 export const RUBRIC_VERSION='concept50-accuracy30-conditions20-v1';
@@ -51,68 +51,20 @@ export async function gradeEssay(env:Env,a:AttemptRow):Promise<Evaluation>{
   return applyRubric(await runJSON(env,prompt,AIGrading),env.AI_MODEL);
 }
 
-const Calculation=z.discriminatedUnion('type',[
-  z.object({type:z.literal('base_conversion'),value:z.string().regex(/^[0-9a-fA-F]{1,12}$/u),from:z.union([z.literal(2),z.literal(10),z.literal(16)]),to:z.union([z.literal(2),z.literal(10),z.literal(16)])}),
-  z.object({type:z.literal('binary_addition'),left:z.string().regex(/^[01]{1,20}$/u),right:z.string().regex(/^[01]{1,20}$/u)}),
-  z.object({type:z.literal('data_size'),sampleRate:z.number().int().min(1).max(1000000),bits:z.number().int().min(1).max(64),channels:z.number().int().min(1).max(8),seconds:z.number().int().min(1).max(3600)}),
-]);
-const Generated=z.object({
-  text:z.string().min(15).max(1800),type:z.enum(['選択式','記述式','論述式']),
-  choices:z.array(z.string().min(1).max(300)).max(6),answer:z.string().min(1).max(1200),
-  correctChoice:z.number().int().min(0).max(5).nullable(),explanation:z.string().min(10).max(2000).regex(/[ぁ-んァ-ヶ一-龯]/u),
-  concepts:z.array(z.string().min(1).max(60)).min(1).max(5),
-  calculation:Calculation.nullable(),
-});
-const Critique=z.object({valid:z.boolean(),uniqueAnswer:z.boolean(),factuallyCorrect:z.boolean(),aligned:z.boolean(),reason:z.string().max(1200),independentAnswer:z.string().max(1200),confidence:z.number().min(0).max(1)});
-export function solveCalculation(c:z.infer<typeof Calculation>):string{
-  if(c.type==='base_conversion'){
-    const allowed=c.from===2?/^[01]+$/u:c.from===10?/^[0-9]+$/u:/^[0-9a-f]+$/iu;
-    if(!allowed.test(c.value))throw new Error('基数と数値が一致しません。');
-    return Number.parseInt(c.value,c.from).toString(c.to).toUpperCase();
-  }
-  if(c.type==='binary_addition')return (Number.parseInt(c.left,2)+Number.parseInt(c.right,2)).toString(2);
-  return String(c.sampleRate*c.bits*c.channels*c.seconds/8);
-}
-const UNITS=['【第1回】情報で問題を解決する','【第2回】情報を伝える','【第3回】コンピュータを活用する','【第4回】データを活用する'];
-const UNIT_TAGS=[['情報モラル','著作権','問題解決・発想法'],['情報デザイン','2進数・数値表現','デジタルデータ'],['アルゴリズム','プログラミング','モデル化・シミュレーション'],['ネットワーク','情報セキュリティ','データ分析']];
-async function generateOne(env:Env,userId:string,setId:string,c:PracticeConditions&{count:number},position:number,jobId:string,lease:string){
-  const topics=(await analytics(env.DB,userId)).topics;
-  const weak=topics.filter(t=>t.incorrect>0).slice(0,3).map(t=>t.tag);
-  const concepts=c.tags.length?c.tags:c.mode==='weakness'&&weak.length?weak:UNIT_TAGS[position%4];
-  const matchingUnits=UNIT_TAGS.map((tags,i)=>tags.some(t=>concepts.includes(t))?i:-1).filter(i=>i>=0);
-  const unitIndex=matchingUnits.length?matchingUnits[position%matchingUnits.length]:position%4;
-  const existing=(await stmt(env.DB,'SELECT v.payload FROM practice_items i JOIN question_versions v ON v.id=i.version_id WHERE i.set_id=?',setId).all<{payload:string}>()).results.map(r=>parseJSON<Question>(r.payload).question_text);
-  const prompt=`高校「情報Ⅰ」の独自問題を1問作成してください。学校教材のコピーや単なる言い換えはせず、新しい具体的な状況を設定してください。問題集名 ${JSON.stringify(c.name)}。追加の出題条件 ${JSON.stringify(c.instructions??'')}。全${c.count}問の${position+1}問目。基礎から段階的に難易度を上げる（追加の出題条件に指定があれば優先）。対象概念の学習状況 ${JSON.stringify(topics.filter(t=>concepts.includes(t.tag)))}。モード ${c.mode}。${c.mode==='application'?'学んだ概念の応用を問う。':''}単元 ${UNITS[unitIndex]}。概念 ${concepts.join('、')}。本文は全て日本語。正解は一意にし、出題条件を明確にする。選択式ならchoicesは4件で記号を付けず、correctChoiceに0始まりの正答番号、answerには選択肢と同じ正答文字列を入れる。記述・論述ではchoicesは空配列でcorrectChoiceはnull。計算問題なら計算をcalculationの型で記述し、answerは単位なしの計算結果とする。data_sizeの結果はバイト、binary_additionは2進数、base_conversionはtoで指定した基数、16進は大文字。calculationで表せない計算問題は作らない。非計算問題ではcalculationはnull。参考解答と具体的な根拠を含む解説も作る。既存問題と重複しないこと。既存問題 ${JSON.stringify(existing)}。`;
-  const g=Generated.parse(await runJSON(env,prompt,Generated,3200));
-  if(g.type==='選択式'&&(g.choices.length!==4||g.correctChoice===null||g.correctChoice>=g.choices.length||g.choices[g.correctChoice]!==g.answer||new Set(g.choices).size!==g.choices.length))throw new Error('選択肢または正答の整合性を確認できません。');
-  if(g.type!=='選択式'&&(g.choices.length||g.correctChoice!==null))throw new Error('記述問題の形式が不正です。');
-  if(existing.some(t=>t.replace(/\s/gu,'')===g.text.replace(/\s/gu,'')))throw new Error('生成問題が重複しています。');
-  const calculationResult=g.calculation?solveCalculation(g.calculation):null;
-  if(calculationResult!==null&&calculationResult!==g.answer.trim())throw new Error('検算結果が一致しません。');
-  const verification=Critique.parse(await runJSON(env,`別の出題者が作った問題を独立して検証してください。まず自力で解いてindependentAnswerに正答を入れ、その後、参考解答が正しいか、条件が足りているか、正答が一意か、情報Ⅰの範囲かを確認してください。不明な場合validはfalseにすること。問題JSON ${JSON.stringify(g)}`,Critique,2400));
-  if(!verification.valid||!verification.uniqueAnswer||!verification.factuallyCorrect||!verification.aligned||verification.confidence<0.85)throw new Error('独立検証で問題を採用できませんでした。');
-  if(g.type!=='論述式'&&verification.independentAnswer.trim().normalize('NFKC')!==g.answer.trim().normalize('NFKC'))throw new Error('独立した解答が一致しません。');
-  const questionId=`ai-${setId}-${position+1}`;
-  const choices=g.choices.map((v,i)=>`${'アイウエ'[i]}．${v}`);
-  const answer=g.type==='選択式'?choices[g.correctChoice!]:g.answer;
-  const q=SourceQuestion.parse({id:questionId,source_type:'確認テスト',unit_name:UNITS[unitIndex],lesson_name:'AI独自問題',source_url:`${env.APP_ORIGIN}/practice/?id=${setId}`,question_number:`Q${position+1}`,question_type:g.type,question_text:g.text,choices,correct_answer:`「${answer}」。`,explanation:g.explanation,image_paths:[],answer_verified:true,answer_kind:g.type==='論述式'?'解答例':'正答',generation:{model:env.AI_MODEL,promptVersion:'generation-v1',createdAt:now(),mode:c.mode}});
-  const rule:GradingRule={type:g.type==='選択式'?'choice':g.type==='記述式'?'short':'essay',accepted:g.type==='選択式'?[String(g.correctChoice)]:[g.answer],normalizeWidth:true,caseSensitive:true,version:'generated-v1'};
-  const current=await stmt(env.DB,"SELECT 1 FROM jobs j JOIN practice_sets s ON s.id=? WHERE j.id=? AND j.status='running' AND j.lease_until=? AND s.status='generating'",setId,jobId,lease).first();
-  if(!current)return false;
-  const stored=await insertQuestion(env.DB,q,100000+position,'ai',rule,g.concepts,{id:jobId,lease});
-  const saved=await stmt(env.DB,"INSERT INTO practice_items SELECT ?,?,?,?,? WHERE EXISTS(SELECT 1 FROM jobs WHERE id=? AND status='running' AND lease_until=?) AND EXISTS(SELECT 1 FROM practice_sets WHERE id=? AND status='generating')",setId,questionId,stored.version,position,JSON.stringify({...verification,calculation:g.calculation,calculationResult,ownerApprovalRequired:true,model:env.AI_MODEL,version:'verify-v1'}),jobId,lease,setId).run();
-  return !!saved.meta.changes;
-}
 interface Job {id:string;user_id:string;kind:string;payload:string;status:string;tries:number;lease_until:string|null;}
 export async function processJobs(env:Env,max=2){
-  const available=(await stmt(env.DB,"SELECT * FROM jobs WHERE ((status IN ('pending','deferred') AND next_at<=?) OR (status='running' AND lease_until<?)) ORDER BY CASE kind WHEN 'grade' THEN 0 ELSE 1 END,created_at LIMIT ?",now(),now(),Math.min(max,3)).all<Job>()).results;
+  await env.DB.batch([
+    stmt(env.DB,"UPDATE jobs SET status='failed',lease_until=NULL,last_error='ChatGPTで作成した問題をMCPから送信してください。',updated_at=? WHERE kind='generate' AND status IN ('pending','running','deferred')",now()),
+    stmt(env.DB,"UPDATE practice_sets SET status='failed' WHERE status='generating' AND EXISTS(SELECT 1 FROM jobs j WHERE j.kind='generate' AND j.status='failed' AND json_extract(j.payload,'$.setId')=practice_sets.id)"),
+  ]);
+  const available=(await stmt(env.DB,"SELECT * FROM jobs WHERE kind='grade' AND ((status IN ('pending','deferred') AND next_at<=?) OR (status='running' AND lease_until<?)) ORDER BY CASE kind WHEN 'grade' THEN 0 ELSE 1 END,created_at LIMIT ?",now(),now(),Math.min(max,3)).all<Job>()).results;
   for(const j of available){
     const lease=new Date(Date.now()+180000).toISOString();
     const claimed=await stmt(env.DB,"UPDATE jobs SET status='running',lease_until=?,tries=tries+1,updated_at=? WHERE id=? AND ((status IN ('pending','deferred') AND next_at<=?) OR (status='running' AND lease_until<?))",lease,now(),j.id,now(),now()).run();
     if(!claimed.meta.changes)continue;
     let evaluationSeq:number|undefined;
     try{
-      const p=parseJSON<{attemptId?:string;setId?:string;conditions?:PracticeConditions&{count:number}}>(j.payload);
+      const p=parseJSON<{attemptId?:string}>(j.payload);
       if(j.kind==='grade'){
         const a=await stmt(env.DB,'SELECT * FROM effective_attempts WHERE id=? AND user_id=?',p.attemptId!,j.user_id).first<AttemptRow&{evaluation_seq:number}>();
         if(!a)throw new Error('回答が見つかりません。');
@@ -121,24 +73,6 @@ export async function processJobs(env:Env,max=2){
         const current=await stmt(env.DB,"SELECT 1 FROM jobs WHERE id=? AND status='running' AND lease_until=?",j.id,lease).first();
         const unchanged=await stmt(env.DB,'SELECT 1 FROM effective_attempts WHERE id=? AND evaluation_seq=?',a.id,a.evaluation_seq).first();
         if(current&&unchanged)await recordEvaluation(env.DB,j.user_id,a.id,result,'ai',{seq:a.evaluation_seq,jobId:j.id,lease});
-      }else{
-        const set=await stmt(env.DB,"SELECT status FROM practice_sets WHERE id=? AND user_id=?",p.setId!,j.user_id).first<{status:string}>();
-        if(!set||set.status!=='generating'){
-          await stmt(env.DB,"UPDATE jobs SET status='done',updated_at=? WHERE id=? AND lease_until=?",now(),j.id,lease).run();continue;
-        }
-        const n=(await stmt(env.DB,'SELECT COUNT(*) AS n FROM practice_items WHERE set_id=?',p.setId!).first<{n:number}>())!.n;
-        // A previous invocation may have saved the final question before it
-        // stopped. Resume finalization without generating an extra question.
-        if(n>=p.conditions!.count){
-          await env.DB.batch([stmt(env.DB,"UPDATE practice_sets SET status='draft' WHERE id=? AND user_id=? AND status='generating' AND EXISTS(SELECT 1 FROM jobs WHERE id=? AND status='running' AND lease_until=?)",p.setId!,j.user_id,j.id,lease),stmt(env.DB,"UPDATE jobs SET status='done',lease_until=NULL,updated_at=?,last_error=NULL WHERE id=? AND status='running' AND lease_until=?",now(),j.id,lease)]);
-          continue;
-        }
-        const saved=await generateOne(env,j.user_id,p.setId!,p.conditions!,n,j.id,lease);
-        if(!saved)continue;
-        if(n+1<p.conditions!.count){
-          await stmt(env.DB,"UPDATE jobs SET status='pending',tries=0,lease_until=NULL,next_at=?,updated_at=?,last_error=NULL WHERE id=? AND lease_until=?",now(),now(),j.id,lease).run();continue;
-        }
-        await stmt(env.DB,"UPDATE practice_sets SET status='draft' WHERE id=? AND user_id=? AND status='generating' AND EXISTS(SELECT 1 FROM jobs WHERE id=? AND status='running' AND lease_until=?)",p.setId!,j.user_id,j.id,lease).run();
       }
       await stmt(env.DB,"UPDATE jobs SET status='done',lease_until=NULL,updated_at=?,last_error=NULL WHERE id=? AND lease_until=?",now(),j.id,lease).run();
     }catch(error){
@@ -155,7 +89,7 @@ export async function processJobs(env:Env,max=2){
       if(!retry&&!deferred){
         const p=parseJSON<{attemptId?:string;setId?:string}>(j.payload);
         if(p.attemptId){const a=await stmt(env.DB,'SELECT method,verdict,evaluation_seq FROM effective_attempts WHERE id=? AND user_id=?',p.attemptId,j.user_id).first<{method:string;verdict:string;evaluation_seq:number}>();if(a?.verdict==='pending'&&evaluationSeq!==undefined)await recordEvaluation(env.DB,j.user_id,p.attemptId,failedGrade(reason),'ai',{seq:evaluationSeq,jobId:j.id,lease:null,status:'failed'});}
-        if(p.setId)await stmt(env.DB,"UPDATE practice_sets SET status='failed' WHERE id=? AND user_id=? AND status='generating' AND EXISTS(SELECT 1 FROM jobs WHERE id=? AND status='failed' AND updated_at=?)",p.setId,j.user_id,j.id,failureAt).run();
+
       }
     }
   }

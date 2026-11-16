@@ -3,32 +3,29 @@ import {Client,StreamableHTTPClientTransport} from '@modelcontextprotocol/client
 import {harness} from './helpers';
 import {mcpHandler} from '../src/server/mcp';
 import {processJobs} from '../src/server/ai';
-import {insertQuestion,roundProgress,startRound} from '../src/server/service';
+import {insertQuestion,roundProgress,startRound,nextExercise,submitAnswer} from '../src/server/service';
 import {fixtureQuestion} from './fixtures';
-
-it('認証済みMCPの学習状況からAI生成・検証結果の確認・採用まで既存周回を変えず実行する',async()=>{
- const h=await harness();const prompts:string[]=[];let call=0;
- Object.defineProperty(h.env,'AI',{value:{run:vi.fn(async(_model,options)=>{
-   prompts.push(options.messages[1].content);const n=Math.floor(call++/2)+1;
-   return {response:call%2?{text:`2進数の${n===1?'11':'100'}を10進数に変換してください。`,type:'記述式',choices:[],answer:String(n+2),correctChoice:null,explanation:`桁の価値を足すと${n+2}です。`,concepts:['2進数・数値表現'],calculation:{type:'base_conversion',value:n===1?'11':'100',from:2,to:10}}:{valid:true,uniqueAnswer:true,factuallyCorrect:true,aligned:true,reason:'独立検証済み',independentAnswer:String(n+2),confidence:0.99}};
- })}});
- const handler=mcpHandler(h.env,h.user,['learning:read','questions:read','answers:read','practice:write']);
- const client=new Client({name:'generation-flow',version:'1.0.0'});
+import {practiceQuestion} from './practice-fixtures';
+import {id} from '../src/server/domain';
+it('MCPから12問を段階保存・検算・確認・採用・回答しWorkers AIと通常周回を変更しない',async()=>{
+ const h=await harness();const run=vi.fn(async()=>{throw Error('問題生成では呼ばない');});Object.defineProperty(h.env,'AI',{value:{run}});
+ const handler=mcpHandler(h.env,h.user,['learning:read','questions:read','answers:read','practice:write']);const client=new Client({name:'client-generation',version:'1.0.0'});
  try{
-  await insertQuestion(h.db,fixtureQuestion(0),0);await startRound(h.db,h.user);const before=await roundProgress(h.db,h.user);
-  await client.connect(new StreamableHTTPClientTransport(new URL(h.env.APP_ORIGIN+'/mcp'),{fetch:async(input,init)=>{const request=new Request(input,init);request.headers.set('Host',new URL(request.url).host);return handler(request,h.env,{} as ExecutionContext);}}));
-  const invoke=async(name:string,args:Record<string,unknown>={})=>{const r=await client.callTool({name,arguments:args});expect(r.isError,JSON.stringify(r)).not.toBe(true);return (r.structuredContent as {data:unknown}).data;};
-  for(const name of ['get_learning_context','get_weak_topics','search_questions'])await invoke(name);
-  await invoke('get_question_details',{questionId:'fixture-0',includeAnswer:true});
-  const set=await invoke('create_practice_set',{origin:'ai',name:'2進数の基礎',count:2,tags:['2進数・数値表現'],instructions:'桁の価値、2進数から10進数、10進数から2進数。基礎から段階的に。'}) as {id:string};
-  expect((await client.callTool({name:'approve_practice_set',arguments:{setId:set.id}})).isError).toBe(true);
-  for(let i=0;i<2;i++)await processJobs(h.env,1);
-  const results=await invoke('get_practice_set_results',{setId:set.id}) as {set:{status:string};items:{correctAnswer:string;explanation:string;verification:{valid:boolean;calculationResult:string}}[];jobs:{status:string}[]};
-  expect(results.set.status).toBe('draft');expect(results.items).toHaveLength(2);expect(results.jobs[0].status).toBe('done');
-  for(const item of results.items){expect(item.correctAnswer).toBeTruthy();expect(item.explanation).toBeTruthy();expect(item.verification.valid).toBe(true);expect(item.verification.calculationResult).toBeTruthy();}
-  expect(prompts[0]).toContain('桁の価値');expect(prompts[0]).toContain('単元 【第2回】情報を伝える');expect(prompts[2]).toContain('全2問の2問目');
-  expect(await invoke('approve_practice_set',{setId:set.id})).toEqual({adopted:true});
-  expect((await invoke('get_practice_set_results',{setId:set.id}) as {set:{status:string}}).set.status).toBe('ready');
-  expect(await roundProgress(h.db,h.user)).toEqual(before);
+ await insertQuestion(h.db,fixtureQuestion(0),0);await startRound(h.db,h.user);const before=await roundProgress(h.db,h.user);
+ await client.connect(new StreamableHTTPClientTransport(new URL(h.env.APP_ORIGIN+'/mcp'),{fetch:async(input,init)=>{const request=new Request(input,init);request.headers.set('Host',new URL(request.url).host);return handler(request,h.env,{} as ExecutionContext);}}));
+ const invoke=async(name:string,args:Record<string,unknown>={})=>{const r=await client.callTool({name,arguments:args});expect(r.isError,JSON.stringify(r)).not.toBe(true);return (r.structuredContent as {data:any}).data;};
+ await invoke('get_learning_context');const setId=id();
+ const input={setId,origin:'ai',name:'2進数の基礎',count:12,questions:[practiceQuestion(1)]};
+ expect(await invoke('create_practice_set',input)).toMatchObject({id:setId,status:'generating',generated:1});
+ expect(await invoke('create_practice_set',input)).toMatchObject({generated:1});
+ expect((await client.callTool({name:'approve_practice_set',arguments:{setId}})).isError).toBe(true);
+ const partial=await invoke('get_practice_set_results',{setId});expect(partial.progress).toEqual({generated:1,verified:1,total:12});expect(partial.items[0].correctAnswer).toBeTruthy();
+ await invoke('create_practice_set',{...input,questions:Array.from({length:11},(_,i)=>practiceQuestion(i+2))});await processJobs(h.env,2);
+ const result=await invoke('get_practice_set_results',{setId});expect(result.set.status).toBe('draft');expect(result.items).toHaveLength(12);expect(result.jobs).toHaveLength(0);
+ for(const item of result.items){expect(item.correctAnswer).toBeTruthy();expect(item.verification).toMatchObject({valid:true,method:'client_review_and_calculation'});expect(item.verification.calculationResult).toBeTruthy();}
+ await invoke('approve_practice_set',{setId});expect((await invoke('get_practice_set_results',{setId})).set.status).toBe('ready');
+ const ex=await nextExercise(h.db,h.user,'practice',setId);expect(ex.question).toBeTruthy();
+ const answer=await submitAnswer(h.db,h.user,{id:id(),contextType:'practice',contextId:setId,questionId:ex.question!.id,versionId:ex.question!.versionId,response:'3',durationMs:1000});expect(answer.attempt.verdict).toBe('correct');
+ expect(run).not.toHaveBeenCalled();expect(await roundProgress(h.db,h.user)).toEqual(before);
  }finally{await client.close();await h.mf.dispose();}
 });

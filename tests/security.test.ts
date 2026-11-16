@@ -32,7 +32,7 @@ async function request(path:string,method='GET',auth?:{token:string;csrf:string}
 it('本番でも学習は匿名で開けるが管理APIはstudyセッションを拒否する',async()=>{
   expect((await request('/api/me')).status).toBe(200);
   const auth=await session('github:123','study');
-  for(const [method,path]of [['GET','/api/backup'],['POST','/api/restore'],['POST','/api/import/question'],['POST','/api/import/image'],['POST','/api/import/finish'],['POST','/api/jobs/run'],['POST','/api/results/unknown/correct'],['POST','/api/results/unknown/regrade'],['POST','/api/practice'],['POST','/api/practice/unknown/adopt'],['DELETE','/api/practice/unknown/items/unknown']]){
+  for(const [method,path]of [['GET','/api/backup'],['POST','/api/restore'],['POST','/api/import/question'],['POST','/api/import/image'],['POST','/api/import/finish'],['POST','/api/jobs/run'],['POST','/api/results/unknown/correct'],['POST','/api/results/unknown/regrade'],['POST','/api/practice'],['POST','/api/practice/unknown/adopt'],['POST','/api/practice/unknown/retry'],['DELETE','/api/practice/unknown/items/unknown']]){
     expect((await request(path,method,auth)).status,method+' '+path).toBe(403);
   }
   expect((await request('/api/questions','GET',auth)).status).toBe(200);

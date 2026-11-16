@@ -5,7 +5,7 @@ import { bodyLimit } from 'hono/body-limit';
 import { OAuthProvider, AuthorizationError, CimdFetchError, type OAuthResourceContext } from '@cloudflare/workers-oauth-provider';
 import { z } from 'zod';
 import { SourceQuestion, AppError, id, now, hash, parseJSON, safeQuestion, type Question, type Evaluation } from './domain';
-import { stmt, insertQuestion, restartPracticeSet, startRound, roundProgress, nextExercise, submitAnswer, getResult, recordEvaluation, requestRegrade, history, analytics, learningContext, listQuestions, getVersion, createPracticeSet, practiceResults, validateContext } from './service';
+import { stmt, insertQuestion, restartPracticeSet, startRound, roundProgress, nextExercise, submitAnswer, getResult, recordEvaluation, requestRegrade, history, analytics, learningContext, listQuestions, getVersion, approvePracticeSet, retryPracticeSet, createPracticeSet, practiceResults, validateContext } from './service';
 import { getSession, isOwnerSession, createSession, logout, githubStart, githubCallback, authorizeGET, authorizePOST, SCOPES, type Bindings, type Variables } from './auth';
 import { mcpHandler } from './mcp';
 import { processJobs } from './ai';
@@ -53,7 +53,7 @@ app.post('/api/dev/demo-practice',async c=>{
   if(!['test','development'].includes(c.env.APP_MODE)||!['localhost','127.0.0.1','[::1]'].includes(new URL(c.req.url).hostname))return c.notFound();
   return c.json(await seedDemo(c.env.DB,c.get('userId')));
 });
-app.get('/api/me',c=>c.json({userId:c.get('userId'),csrf:c.get('csrf'),mode:c.env.APP_MODE}));
+app.get('/api/me',async c=>c.json({userId:c.get('userId'),csrf:c.get('csrf'),mode:c.env.APP_MODE,canManage:isOwnerSession(await getSession(c),c.env)}));
 app.post('/api/logout',async c=>{await logout(c);return c.json({ok:true});});
 app.get('/api/dashboard',async c=>{
   const [progress,analysis,totals]=await Promise.all([roundProgress(c.env.DB,c.get('userId')),analytics(c.env.DB,c.get('userId')),c.env.DB.prepare("SELECT COUNT(*) AS total,SUM(v.gradable) AS gradable FROM questions q JOIN question_versions v ON v.id=q.current_version WHERE q.origin='school'").first()]);
@@ -101,28 +101,20 @@ app.get('/api/images',async c=>{
 });
 app.get('/api/history',async c=>c.json(await history(c.env.DB,c.get('userId'),{...queryFilters(c),questionId:c.req.query('questionId'),from:c.req.query('from'),to:c.req.query('to'),verdict:c.req.query('verdict')})));
 app.get('/api/analytics',async c=>c.json(await analytics(c.env.DB,c.get('userId'))));
-app.get('/api/practice',async c=>c.json((await stmt(c.env.DB,"SELECT * FROM practice_sets WHERE user_id=? AND json_extract(conditions,'$.repeatedFrom') IS NULL ORDER BY created_at DESC LIMIT 100",c.get('userId')).all()).results));
-app.post('/api/practice',async c=>{const r=await createPracticeSet(c.env.DB,c.get('userId'),await c.req.json());if(r.status==='generating')c.executionCtx.waitUntil(processJobs(c.env,1));return c.json(r,201);});
+app.get('/api/practice',async c=>c.json((await stmt(c.env.DB,"SELECT s.*,(SELECT COUNT(*) FROM practice_items i WHERE i.set_id=s.id) AS generated,COALESCE(json_extract(s.conditions,'$.count'),(SELECT COUNT(*) FROM practice_items i WHERE i.set_id=s.id)) AS total,j.status AS job_status,CASE WHEN json_type(j.payload,'$.candidate')='object' THEN 'verifying' ELSE 'generating' END AS phase FROM practice_sets s LEFT JOIN jobs j ON j.id=(SELECT id FROM jobs WHERE user_id=s.user_id AND kind='generate' AND json_extract(payload,'$.setId')=s.id ORDER BY created_at DESC LIMIT 1) WHERE s.user_id=? AND json_extract(s.conditions,'$.repeatedFrom') IS NULL ORDER BY s.created_at DESC LIMIT 100",c.get('userId')).all()).results));
+app.post('/api/practice',async c=>{const r=await createPracticeSet(c.env.DB,c.get('userId'),await c.req.json());return c.json(r,201);});
 app.post('/api/practice/:id/restart',async c=>c.json(await restartPracticeSet(c.env.DB,c.get('userId'),c.req.param('id')),201));
 app.get('/api/practice/:id',async c=>{
   const data=await practiceResults(c.env.DB,c.get('userId'),c.req.param('id'));
   const owner=isOwnerSession(await getSession(c),c.env);
   return c.json(practiceVisibility(data,owner));
 });
-app.post('/api/practice/:id/adopt',async c=>{
-  const p=await practiceResults(c.env.DB,c.get('userId'),c.req.param('id'));
-  if(p.set.status!=='draft'||!p.items.length||p.items.some(i=>!(i.verification as {valid?:boolean}).valid))throw new AppError(409,'検証済みの問題集を確認してください。');
-  await stmt(c.env.DB,"UPDATE practice_sets SET status='ready' WHERE id=? AND user_id=? AND status='draft'",p.set.id,c.get('userId')).run();return c.json({adopted:true});
-});
+app.post('/api/practice/:id/adopt',async c=>c.json(await approvePracticeSet(c.env.DB,c.get('userId'),c.req.param('id'))));
 app.delete('/api/practice/:id/items/:questionId',async c=>{
   const p=await practiceResults(c.env.DB,c.get('userId'),c.req.param('id'));if(p.set.status!=='draft')throw new AppError(409,'確認中の問題だけ除外できます。');
   await stmt(c.env.DB,'DELETE FROM practice_items WHERE set_id=? AND question_id=?',p.set.id,c.req.param('questionId')).run();return c.json({excluded:true});
 });
-app.post('/api/practice/:id/retry',async c=>{
-  const p=await practiceResults(c.env.DB,c.get('userId'),c.req.param('id'));if(p.set.status!=='failed')throw new AppError(409,'再生成できる状態ではありません。');
-  await c.env.DB.batch([stmt(c.env.DB,"UPDATE practice_sets SET status='generating' WHERE id=? AND user_id=?",p.set.id,c.get('userId')),stmt(c.env.DB,"UPDATE jobs SET status='pending',tries=0,next_at=?,updated_at=? WHERE user_id=? AND json_extract(payload,'$.setId')=? AND status='failed'",now(),now(),c.get('userId'),p.set.id)]);
-  c.executionCtx.waitUntil(processJobs(c.env,1));return c.json({queued:true},202);
-});
+app.post('/api/practice/:id/retry',async c=>c.json(await retryPracticeSet(c.env.DB,c.get('userId'),c.req.param('id')),202));
 app.get('/api/settings',async c=>{
   const [usage,jobs,counts]=await Promise.all([stmt(c.env.DB,'SELECT * FROM ai_usage WHERE day=?',new Date().toISOString().slice(0,10)).first(),stmt(c.env.DB,"SELECT id,kind,status,last_error,next_at FROM jobs WHERE user_id=? AND status!='done' ORDER BY created_at DESC LIMIT 30",c.get('userId')).all(),c.env.DB.prepare("SELECT COUNT(*) AS total,SUM(v.gradable) AS gradable FROM questions q JOIN question_versions v ON v.id=q.current_version WHERE q.origin='school'").first()]);
   return c.json({usage,jobs:jobs.results,counts,aiModel:c.env.AI_MODEL,dailyNeurons:Number(c.env.AI_DAILY_NEURONS),mcpURL:`${c.env.APP_ORIGIN}/mcp`,scopes:SCOPES});

@@ -34,7 +34,7 @@ export function mcpHandler(env:Env,userId:string,scopes:string[]){
     });
     tool('search_questions','単元・形式・概念・理解度・本文で問題を検索する。正答は含まない。',{...page,unit:z.string().optional(),type:z.enum(['選択式','記述式','論述式']).optional(),tag:z.string().optional(),origin:z.enum(['school','ai']).optional(),state:z.enum(['unseen','insufficient','needs_review','stable','review','developing']).optional(),query:z.string().max(80).optional(),minAccuracy:z.number().min(0).max(1).optional(),maxAccuracy:z.number().min(0).max(1).optional()},['questions:read'],i=>listQuestions(env.DB,i,userId));
     tool('recommend_questions','根拠付きの復習推薦。通常周回の対象・順番は変わらない。',{limit:z.number().int().min(1).max(30).default(10)},['learning:read','questions:read'],i=>recommendations(env.DB,userId,i.limit));
-    tool('create_practice_set','問題集を保存する。AI生成ではジョブを作り、検証後もMCPで採用確認が必要。',PracticeInput.shape,['practice:write'],i=>createPracticeSet(env.DB,userId,i),true);
+    tool('create_practice_set','ChatGPTで作成・検証した問題をquestionsに指定して保存する。Workers AIでは生成しない。setIdを指定すると同じ問題集に未保存の位置だけ追加する。通信再試行は同じsetId・positionを使う。全問保存後もユーザーの採用確認が必要。',PracticeInput.shape,['practice:write'],i=>createPracticeSet(env.DB,userId,i),true);
     tool('approve_practice_set','検証済みの独自問題を確認して採用する。get_practice_set_resultsで内容・参考解答・検証結果を確認してから実行する。',{setId:z.string()},['practice:write'],i=>approvePracticeSet(env.DB,userId,i.setId),true);
     tool('get_practice_set_results','問題集の状態・回答結果を取得する。',{setId:z.string()},['learning:read','questions:read'],async i=>{
       const r=await practiceResults(env.DB,userId,i.setId);

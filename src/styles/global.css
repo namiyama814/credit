@@ -16,3 +16,5 @@ body[data-page=exercise] .main{min-height:100svh;margin:0 auto;padding-top:32px;
 
 /* Keep form controls at 16px to prevent iOS Safari from zooming on focus. */
 input:not([type=checkbox]):not([type=radio]):not([type=file]),textarea,select{font-size:16px}
+
+.practice-state{display:block;font-size:.85rem}.practice-question{margin-block:24px;padding-block:16px;border-top:1px solid var(--ink)}
