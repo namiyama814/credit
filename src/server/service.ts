@@ -98,19 +98,17 @@ export async function roundProgress(db:D1Database,userId:string,roundId?:string)
   return { current:round,rounds,items,counts,next:items.find(i=>i.verdict==='unanswered') ?? null };
 }
 export async function nextExercise(db:D1Database,userId:string,contextType='round',contextId?:string) {
-  let item:{question_id:string;version_id:string}|undefined,context:string;
+  let item:{question_id:string;version_id:string}|undefined,context:string,practice:Awaited<ReturnType<typeof practiceProgress>>|undefined;
   if(contextType==='round'){
     const progress=await roundProgress(db,userId,contextId);
     if(!progress.current)return { question:null,progress,contextType:'round',contextId:null,draft:null };
     context=progress.current.id;item=progress.next ?? undefined;
     if(!item)return { question:null,progress,contextType,contextId:context,draft:null };
   }else if(contextType==='practice'){
-    const set=await stmt(db,"SELECT * FROM practice_sets WHERE id=? AND user_id=? AND status='ready'",contextId ?? '',userId).first();
-    if(!set)throw new AppError(404,'問題集が見つかりません。');
-    context=contextId!;
-    item=await stmt(db,"SELECT i.question_id,i.version_id FROM practice_items i WHERE i.set_id=? AND NOT EXISTS(SELECT 1 FROM attempts a WHERE a.user_id=? AND a.context_type='practice' AND a.context_id=i.set_id AND a.question_id=i.question_id) ORDER BY i.position LIMIT 1",context,userId).first<{question_id:string;version_id:string}>() ?? undefined;
+    practice=await practiceProgress(db,userId,contextId??'');
+    context=practice.current.id;item=practice.items.find(i=>i.verdict==='unanswered');
   }else throw new AppError(400,'演習形式が不正です。');
-  if(!item)return {question:null,contextType,contextId:context,draft:null};
+  if(!item)return {question:null,contextType,contextId:context,draft:null,...(practice?{progress:practice}:{})};
   const row=await getVersion(db,item.question_id,item.version_id);
   const draft=await stmt(db,'SELECT response,elapsed_ms,updated_at FROM drafts WHERE user_id=? AND context_type=? AND context_id=? AND question_id=?',userId,contextType,context,item.question_id).first<{response:string;elapsed_ms:number;updated_at:string}>();
   return {question:safeQuestion(parseJSON<Question>(row.payload),row.id,parseJSON<string[]>(row.tags),row.origin),contextType,contextId:context,draft:draft?{response:parseJSON(draft.response),elapsedMs:draft.elapsed_ms,updatedAt:draft.updated_at,versionId:row.id}:null};
@@ -324,21 +322,38 @@ export async function approvePracticeSet(db:D1Database,userId:string,setId:strin
   return {adopted:true};
 }
 
+async function latestPracticeSet(db:D1Database,userId:string,setId:string){
+ const source=await stmt(db,"WITH RECURSIVE chain AS (SELECT * FROM practice_sets WHERE id=? AND user_id=? AND status='ready' UNION SELECT child.* FROM practice_sets child JOIN chain parent ON json_extract(child.conditions,'$.repeatedFrom')=parent.id WHERE child.user_id=? AND child.status='ready') SELECT c.* FROM chain c WHERE NOT EXISTS(SELECT 1 FROM practice_sets child WHERE child.user_id=? AND json_extract(child.conditions,'$.repeatedFrom')=c.id AND child.status='ready') LIMIT 1",setId,userId,userId,userId).first<{id:string;name:string;mode:string;origin:string;conditions:string}>();
+ if(!source)throw new AppError(404,'問題集が見つかりません。');return source;
+}
+async function practiceRoundItems(db:D1Database,userId:string,setId:string){
+ return (await stmt(db,"SELECT i.question_id,i.version_id,i.position,COALESCE(a.verdict,'unanswered') AS verdict FROM practice_items i LEFT JOIN effective_attempts a ON a.context_type='practice' AND a.context_id=i.set_id AND a.question_id=i.question_id AND a.user_id=? WHERE i.set_id=? ORDER BY i.position",userId,setId).all<{question_id:string;version_id:string;position:number;verdict:string}>()).results;
+}
+export async function practiceProgress(db:D1Database,userId:string,setId:string):Promise<{current:{id:string;status:string};items:{question_id:string;version_id:string;position:number;verdict:string}[];counts:{total:number;unanswered:number;pending:number;needs_review:number;correct:number;incorrect:number}}>{
+ const source=await latestPracticeSet(db,userId,setId),items=await practiceRoundItems(db,userId,source.id);
+ const counts={total:items.length,unanswered:0,pending:0,needs_review:0,correct:0,incorrect:0};
+ for(const i of items)counts[i.verdict as keyof Omit<typeof counts,'total'>]++;
+ if(!counts.unanswered&&!counts.pending&&!counts.needs_review&&counts.incorrect){
+  const next=await restartPracticeSet(db,userId,source.id);
+  if(next.id!==source.id)return practiceProgress(db,userId,next.id);
+ }
+ const status=counts.unanswered?'active':counts.pending||counts.needs_review?'waiting':counts.incorrect?'complete':'cleared';
+ return {current:{id:source.id,status},items,counts};
+}
 export async function restartPracticeSet(db:D1Database,userId:string,setId:string){
-  const source=await stmt(db,"WITH RECURSIVE chain AS (SELECT * FROM practice_sets WHERE id=? AND user_id=? AND status='ready' UNION SELECT child.* FROM practice_sets child JOIN chain parent ON json_extract(child.conditions,'$.repeatedFrom')=parent.id WHERE child.user_id=? AND child.status='ready') SELECT c.* FROM chain c WHERE NOT EXISTS(SELECT 1 FROM practice_sets child WHERE child.user_id=? AND json_extract(child.conditions,'$.repeatedFrom')=c.id AND child.status='ready') LIMIT 1",setId,userId,userId,userId).first<{id:string;name:string;mode:string;origin:string;conditions:string}>();
-  if(!source)throw new AppError(404,'問題集が見つかりません。');
-  setId=source.id;
-  const unanswered=await stmt(db,"SELECT 1 FROM practice_items i WHERE i.set_id=? AND NOT EXISTS(SELECT 1 FROM attempts a WHERE a.user_id=? AND a.context_type='practice' AND a.context_id=i.set_id AND a.question_id=i.question_id) LIMIT 1",setId,userId).first();
-  if(unanswered)return {id:setId,status:'ready'};
-  const existing=await stmt(db,"SELECT id FROM practice_sets WHERE user_id=? AND json_extract(conditions,'$.repeatedFrom')=?",userId,setId).first<{id:string}>();
-  if(existing)return {id:existing.id,status:'ready'};
-  const next=id();
-  await db.batch([
-    stmt(db,"INSERT OR IGNORE INTO practice_sets(id,user_id,name,mode,origin,status,conditions,created_at) VALUES(?,?,?,?,?,'ready',?,?)",next,userId,source.name,source.mode,source.origin,JSON.stringify({...parseJSON<Record<string,unknown>>(source.conditions),repeatedFrom:setId}),now()),
-    stmt(db,'INSERT INTO practice_items(set_id,question_id,version_id,position,verification) SELECT ?,question_id,version_id,position,verification FROM practice_items WHERE set_id=? AND EXISTS(SELECT 1 FROM practice_sets WHERE id=?)',next,setId,next),
-  ]);
-  const saved=await stmt(db,"SELECT id FROM practice_sets WHERE user_id=? AND json_extract(conditions,'$.repeatedFrom')=?",userId,setId).first<{id:string}>();
-  return {id:saved!.id,status:'ready'};
+ const source=await latestPracticeSet(db,userId,setId);setId=source.id;
+ const items=await practiceRoundItems(db,userId,setId);
+ if(items.some(i=>['unanswered','pending','needs_review'].includes(i.verdict)))return {id:setId,status:'ready'};
+ if(!items.some(i=>i.verdict==='incorrect'))return {id:setId,status:'cleared'};
+ const next=id();
+ const ready="NOT EXISTS(SELECT 1 FROM practice_items i LEFT JOIN effective_attempts a ON a.context_type='practice' AND a.context_id=i.set_id AND a.question_id=i.question_id AND a.user_id=? WHERE i.set_id=? AND (a.id IS NULL OR a.verdict IN ('pending','needs_review')))";
+ const incorrect="SELECT i.question_id,i.version_id,i.position,i.verification FROM practice_items i JOIN effective_attempts a ON a.context_type='practice' AND a.context_id=i.set_id AND a.question_id=i.question_id AND a.user_id=? WHERE i.set_id=? AND a.verdict='incorrect'";
+ await db.batch([
+  stmt(db,`INSERT OR IGNORE INTO practice_sets(id,user_id,name,mode,origin,status,conditions,created_at) SELECT ?,?,?,?,?,'ready',json_set(?,'$.repeatedFrom',?,'$.count',(SELECT COUNT(*) FROM (${incorrect}))),? WHERE ${ready} AND EXISTS(${incorrect})`,next,userId,source.name,source.mode,source.origin,source.conditions,setId,userId,setId,now(),userId,setId,userId,setId),
+  stmt(db,`INSERT INTO practice_items(set_id,question_id,version_id,position,verification) SELECT ?,question_id,version_id,position,verification FROM (${incorrect}) WHERE EXISTS(SELECT 1 FROM practice_sets WHERE id=?)`,next,userId,setId,next),
+ ]);
+ const saved=await stmt(db,"SELECT id FROM practice_sets WHERE user_id=? AND json_extract(conditions,'$.repeatedFrom')=?",userId,setId).first<{id:string}>();
+ return {id:saved?.id??setId,status:'ready'};
 }
 
 // Legacy job retries request client content; Workers AI never generates questions.

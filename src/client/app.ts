@@ -68,7 +68,7 @@ async function exercise(){
   }else data=await api<Exercise>(`/exercise?type=${encodeURIComponent(type)}${contextId?`&id=${encodeURIComponent(contextId)}`:''}`);
   if(!data.question){
     const progress='progress' in data?data.progress:undefined;
-    render(el('h1',{},progress?.current?.status==='cleared'?'全問クリア':progress&&(progress.counts.pending||progress.counts.needs_review)?'採点を確認':'回答が完了しました'),progress&&el('p',{},`採点待ち ${progress.counts.pending}問　要確認 ${progress.counts.needs_review}問`),el('div',{class:'actions'},type==='practice'&&contextId&&button('もう一度',async()=>{const set=await api<{id:string}>(`/practice/${encodeURIComponent(contextId)}/restart`,{});location.assign(`/exercise/?type=practice&id=${encodeURIComponent(set.id)}`);},true),link(type==='practice'?'問題集へ':'戻る',type==='practice'?'/practice/':'/',type!=='practice')));return;
+    render(el('h1',{},progress?.current?.status==='cleared'?'全問クリア':progress&&(progress.counts.pending||progress.counts.needs_review)?'採点を確認':'回答が完了しました'),progress&&(type!=='practice'||!!(progress.counts.pending||progress.counts.needs_review))&&el('p',{},`採点待ち ${progress.counts.pending}問　要確認 ${progress.counts.needs_review}問`),el('div',{class:'actions'},type==='practice'&&progress&&progress.current?.status!=='cleared'&&button('採点結果を更新',exercise,true),link(type==='practice'?'問題集へ':'戻る',type==='practice'?'/practice/':'/',type!=='practice')));return;
   }
   const q=data.question;
   if(!q.gradable){render(el('h1',{},'振り返り'),questionBody(q),el('p',{class:'message'},'正答未確認のため採点対象外です。'),link('問題一覧へ','/questions/'));return;}

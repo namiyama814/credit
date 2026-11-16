@@ -36,6 +36,19 @@ test('指定した問題集を選ぶと問題一覧を挟まず演習し、通�
  await page.getByRole('link',{name:'指定問題の演習',exact:true}).click();await expect(page.getByRole('button',{name:'ア．サンプルA'})).toBeVisible();
  const exercise=await (await request.get(`/api/exercise?type=practice&id=${set.id}`)).json();expect(exercise.question.id).toBe('fixture-0');expect(exercise.contextType).toBe('practice');
  await page.getByRole('button',{name:'ア．サンプルA'}).click();await page.getByRole('button',{name:'送信',exact:true}).click();await expect(page.getByRole('heading',{name:'正解',exact:true})).toBeVisible();await page.getByRole('link',{name:'次の問題へ'}).click();
- await expect(page.getByRole('heading',{name:'回答が完了しました'})).toBeVisible();await page.getByRole('link',{name:'問題集へ',exact:true}).click();await expect(page).toHaveURL(/\/practice\/$/u);
+ await expect(page.getByRole('heading',{name:'全問クリア'})).toBeVisible();await page.getByRole('link',{name:'問題集へ',exact:true}).click();await expect(page).toHaveURL(/\/practice\/$/u);
  const after=await (await request.get('/api/rounds')).json();expect(after).toEqual(before);
+});
+
+test('問題集も正解を外して不正解だけを周回し、一覧から戻っても全問クリアを保つ',async({page,request})=>{
+ const csrf=(await (await request.get('/api/me')).json()).csrf;await seed(request,csrf);
+ const before=await (await request.get('/api/rounds')).json();
+ const response=await request.post('/api/practice',{headers:{Origin:'http://127.0.0.1:4322','X-CSRF-Token':csrf},data:{origin:'school',name:'不正解だけの問題集',questionIds:['fixture-0','fixture-1'],count:2}});expect(response.ok()).toBe(true);const set=await response.json();
+ await page.context().addCookies((await request.storageState()).cookies);await page.goto(`/exercise/?type=practice&id=${set.id}`);
+ await page.getByRole('button',{name:'ア．サンプルA'}).click();await page.getByRole('button',{name:'送信',exact:true}).click();await page.getByRole('link',{name:'次の問題へ'}).click();
+ await expect(page.locator('.question')).toContainText('サンプル問題1');await page.getByRole('textbox',{name:'回答を入力'}).fill('誤答');await page.getByRole('button',{name:'送信',exact:true}).click();await page.getByRole('link',{name:'次の問題へ'}).click();
+ await expect(page.locator('.question')).toContainText('サンプル問題1');await page.getByRole('textbox',{name:'回答を入力'}).fill('用語1');await page.getByRole('button',{name:'送信',exact:true}).click();await page.getByRole('link',{name:'次の問題へ'}).click();
+ await expect(page.getByRole('heading',{name:'全問クリア',exact:true})).toBeVisible();await expect(page.getByRole('button',{name:'もう一度'})).toHaveCount(0);
+ await page.goto(`/exercise/?type=practice&id=${set.id}`);await expect(page.getByRole('heading',{name:'全問クリア',exact:true})).toBeVisible();
+ expect((await (await request.get(`/api/practice/${set.id}`)).json()).items.map((i:{verdict:string})=>i.verdict)).toEqual(['correct','incorrect']);expect(await (await request.get('/api/rounds')).json()).toEqual(before);
 });
