@@ -101,7 +101,7 @@ async function exercise(){
   },true);
   const onPageHide=()=>{if(!submitting)localSave();};window.addEventListener('pagehide',onPageHide);
   disposeExercise=()=>{clearInterval(interval);clearTimeout(timer);window.removeEventListener('pagehide',onPageHide);};
-  render(questionBody(q),inputArea,el('div',{class:'exercise-footer'},submit));
+  render(el('div',{class:'exercise-content'},questionBody(q),inputArea,el('div',{class:'exercise-footer'},submit)));
 }
 async function resultPage(){
   const attemptId=params.get('id');if(!attemptId)throw new Error('回答を選択してください。');
