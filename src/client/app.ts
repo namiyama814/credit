@@ -121,7 +121,7 @@ async function practicePage(){
   const setId=params.get('id');if(setId){location.replace(`/exercise/?type=practice&id=${encodeURIComponent(setId)}`);return;}
   const sets=await api<{id:string;name:string;status:string}[]>('/practice');
   const ready=sets.filter(s=>s.status==='ready');
-  render(ready.length?el('div',{class:'collection-list'},...ready.map(s=>link(s.name,`/exercise/?type=practice&id=${encodeURIComponent(s.id)}`,true))):el('div',{class:'practice-empty'},el('p',{},'問題集がありません')));
+  render(ready.length?el('ul',{class:'collection-list',role:'list'},...ready.map(s=>el('li',{},el('a',{class:'collection-item',href:`/exercise/?type=practice&id=${encodeURIComponent(s.id)}`},el('span',{},s.name),icon('chevron','collection-chevron'))))):el('div',{class:'practice-empty'},el('p',{},'問題集がありません')));
 }
 async function main(){
   const session=await api<{userId:string;csrf:string}>('/me');csrf=session.csrf;userId=session.userId;

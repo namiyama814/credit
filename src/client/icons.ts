@@ -1,7 +1,8 @@
-type IconName = 'correct' | 'incorrect' | 'pending' | 'review' | 'radio';
+type IconName = 'correct' | 'incorrect' | 'pending' | 'review' | 'radio' | 'chevron';
 const NS = 'http://www.w3.org/2000/svg';
 type Shape = [string, Record<string, string>];
 const shapes: Record<IconName, Shape[]> = {
+  chevron: [['path', { d: 'm9 5 7 7-7 7' }]],
   correct: [['circle', { cx: '12', cy: '12', r: '9' }]],
   incorrect: [['path', { d: 'M6 6l12 12M18 6L6 18' }]],
   pending: [5, 12, 19].map(cx => ['circle', { cx: String(cx), cy: '12', r: '1.5', fill: 'currentColor', stroke: 'none' }]),
