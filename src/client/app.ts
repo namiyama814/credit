@@ -29,7 +29,7 @@ function button(label:string,fn:()=>unknown|Promise<unknown>,primary=false,small
   b.addEventListener('click',async()=>{b.disabled=true;try{await fn();}catch(error){flash(error instanceof Error?error.message:'処理を完了できませんでした。');}finally{b.disabled=false;}});return b;
 }
 const link=(label:string,href:string,primary=false)=>el('a',{href,class:primary?'button primary':''},label);
-function textField(label:string,value='',multiline=false){const i=multiline?el('textarea',{'aria-label':label}):el('input',{type:'text','aria-label':label});i.value=value;return {node:el('label',{class:'field'},label,i),input:i};}
+function textField(label:string,value='',multiline=false){const i=multiline?el('textarea',{'aria-label':label,placeholder:label}):el('input',{type:'text','aria-label':label,placeholder:label});i.value=value;return {node:el('div',{class:'field'},i),input:i};}
 function formatText(text:string){
   const node=el('div',{class:'prose'});
   // A small, non-HTML TeX renderer for the imported formula. All glyphs keep
@@ -84,7 +84,7 @@ async function exercise(){
       b.disabled=!!pending;b.addEventListener('click',()=>{response=[choice.id];for(const other of controls)other.setAttribute('aria-pressed','false');b.setAttribute('aria-pressed','true');change();});controls.push(b);append(list,b);}
     append(inputArea,list);
   }else{
-    const field=textField(q.type==='論述式'?'回答':'回答を入力',typeof response==='string'?response:'',q.type==='論述式');textarea=field.input;textarea.disabled=!!pending;textarea.addEventListener('input',()=>{response=textarea!.value;change();});append(inputArea,field.node);
+    const field=textField('回答を入力',typeof response==='string'?response:'',q.type==='論述式');textarea=field.input;textarea.disabled=!!pending;textarea.addEventListener('input',()=>{response=textarea!.value;change();});append(inputArea,field.node);
   }
   const submit=button('送信',async()=>{
     if(submitting)return;if(Array.isArray(response)?!response.length:!response.trim())throw new Error('回答を入力してください。');
