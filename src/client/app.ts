@@ -70,7 +70,13 @@ async function exercise(){
   if(!data.question){
     const progress='progress' in data?data.progress:undefined;
     const unresolved=type==='round'&&progress ? (await api<RoundProgress>(`/rounds${data.contextId?`?id=${encodeURIComponent(data.contextId)}`:''}`)).items.filter(i=>i.verdict==='pending'||i.verdict==='needs_review') : [];
-    render(el('div',{class:'completion-content'},el('h1',{},progress?.current?.status==='cleared'?'全問クリア':progress&&(progress.counts.pending||progress.counts.needs_review)?'採点を確認':'回答が完了しました'),progress&&(type!=='practice'||!!(progress.counts.pending||progress.counts.needs_review))&&el('p',{},`採点待ち ${progress.counts.pending}問　要確認 ${progress.counts.needs_review}問`),el('div',{class:'actions completion-actions'},progress&&progress.current?.status!=='cleared'&&button('採点結果を更新',exercise,true),link(type==='practice'?'問題集へ':'戻る',type==='practice'?'/practice/':'/',type!=='practice')), el('div',{class:'completion-reviews'},...unresolved.map((item,i)=>link(`回答${i+1}の採点を確認`,`/result/?id=${encodeURIComponent(item.attempt_id!)}&next=${encodeURIComponent('/exercise/')}`,false)) )));return;
+    render(el('div',{class:'completion-content'},
+      el('h1',{},progress?.current?.status==='cleared'?'全問クリア':progress&&(progress.counts.pending||progress.counts.needs_review)?'採点を確認':'回答が完了しました'),
+      progress&&(type!=='practice'||!!(progress.counts.pending||progress.counts.needs_review))&&el('p',{},`採点待ち ${progress.counts.pending}問　要確認 ${progress.counts.needs_review}問`),
+      !!unresolved.length&&el('ul',{class:'collection-list completion-reviews',role:'list'},...unresolved.map((item,i)=>el('li',{},
+        el('a',{class:'collection-item',href:`/result/?id=${encodeURIComponent(item.attempt_id!)}&next=${encodeURIComponent('/exercise/')}`,'aria-label':`回答${i+1}の採点を確認`},
+          el('span',{},`回答 ${i+1}`),el('span',{class:'review-verdict'},verdicts[item.verdict],icon('chevron','collection-chevron')))))),
+      el('div',{class:'actions completion-actions'},progress&&progress.current?.status!=='cleared'&&button('採点結果を更新',exercise,true),link(type==='practice'?'問題集へ':'戻る',type==='practice'?'/practice/':'/',!progress||progress.current?.status==='cleared'))));return;
   }
   const q=data.question;
   if(!q.gradable){render(el('h1',{},'振り返り'),questionBody(q),el('p',{class:'message'},'正答未確認のため採点対象外です。'),link('問題一覧へ','/questions/'));return;}
