@@ -49,10 +49,10 @@ export async function listQuestions(db: D1Database, filter: { unit?: string; typ
 }
 export async function startRound(db: D1Database, userId: string, restart = false) {
   const active = await stmt(db,"SELECT * FROM rounds WHERE user_id=? AND status='active'",userId).first<RoundRow>();
-  if (active) return active;
+  if (active) {await advanceRound(db,userId,active.id,true);return (await stmt(db,'SELECT * FROM rounds WHERE user_id=? ORDER BY cycle DESC,number DESC LIMIT 1',userId).first<RoundRow>())!;}
   const latest = await stmt(db,'SELECT * FROM rounds WHERE user_id=? ORDER BY cycle DESC,number DESC LIMIT 1',userId).first<RoundRow>();
   if (latest && !restart) {
-    await advanceRound(db,userId,latest.id);
+    await advanceRound(db,userId,latest.id,true);
     return (await stmt(db,'SELECT * FROM rounds WHERE user_id=? ORDER BY cycle DESC,number DESC LIMIT 1',userId).first<RoundRow>())!;
   }
   const roundId=id(),cycle=(latest?.cycle ?? 0)+1;
@@ -71,20 +71,20 @@ export async function startRound(db: D1Database, userId: string, restart = false
   }
   return (await stmt(db,'SELECT * FROM rounds WHERE id=?',roundId).first<RoundRow>())!;
 }
-export async function advanceRound(db: D1Database,userId:string,roundId:string) {
+export async function advanceRound(db: D1Database,userId:string,roundId:string,continueUnresolved=false) {
   const round=await stmt(db,'SELECT * FROM rounds WHERE id=? AND user_id=?',roundId,userId).first<RoundRow>();
   if(!round)return;
   const next=id();
   // All transition predicates run inside one D1 atomic batch. Another request
-  // cannot close a round that has unresolved evaluations or insert a second next round.
-  const ready=`NOT EXISTS(SELECT 1 FROM round_items i LEFT JOIN effective_attempts a ON a.context_type='round' AND a.context_id=i.round_id AND a.question_id=i.question_id AND a.user_id=? WHERE i.round_id=? AND (a.id IS NULL OR a.verdict IN ('pending','needs_review')))`;
-  const targets=`SELECT i.question_id,i.version_id FROM round_items i JOIN effective_attempts a ON a.context_type='round' AND a.context_id=i.round_id AND a.question_id=i.question_id AND a.user_id=? WHERE i.round_id=? AND a.verdict='incorrect' UNION SELECT question_id,version_id FROM review_debts WHERE user_id=?`;
+  // cannot close an unanswered round or insert a second next round.
+  const ready=`NOT EXISTS(SELECT 1 FROM round_items i LEFT JOIN effective_attempts a ON a.context_type='round' AND a.context_id=i.round_id AND a.question_id=i.question_id AND a.user_id=? WHERE i.round_id=? AND (a.id IS NULL${continueUnresolved?'':" OR a.verdict IN ('pending','needs_review')"}))`;
+  const targets=`SELECT i.question_id,i.version_id FROM round_items i JOIN effective_attempts a ON a.context_type='round' AND a.context_id=i.round_id AND a.question_id=i.question_id AND a.user_id=? WHERE i.round_id=? AND a.verdict IN ('incorrect','pending','needs_review') UNION SELECT question_id,version_id FROM review_debts WHERE user_id=?`;
   await db.batch([
     stmt(db,`UPDATE rounds SET status='complete',completed_at=COALESCE(completed_at,?) WHERE id=? AND user_id=? AND status='active' AND ${ready}`,now(),roundId,userId,userId,roundId),
     stmt(db,`INSERT OR IGNORE INTO rounds(id,user_id,cycle,number,status,created_at) SELECT ?,user_id,cycle,number+1,'active',? FROM rounds WHERE id=? AND user_id=? AND status IN ('complete','cleared') AND NOT EXISTS(SELECT 1 FROM rounds WHERE user_id=? AND status='active') AND EXISTS(${targets})`,next,now(),roundId,userId,userId,userId,roundId,userId),
     stmt(db,`INSERT OR IGNORE INTO round_items(round_id,question_id,version_id,position) SELECT ?,t.question_id,t.version_id,ROW_NUMBER() OVER(ORDER BY q.position,t.question_id) FROM (${targets}) t JOIN questions q ON q.id=t.question_id WHERE EXISTS(SELECT 1 FROM rounds WHERE id=?)`,next,userId,roundId,userId,next),
     stmt(db,"DELETE FROM review_debts WHERE user_id=? AND EXISTS(SELECT 1 FROM round_items WHERE round_id=? AND question_id=review_debts.question_id)",userId,next),
-    stmt(db,`UPDATE rounds SET status='cleared' WHERE id=? AND user_id=? AND status='complete' AND NOT EXISTS(SELECT 1 FROM rounds WHERE user_id=? AND cycle=? AND number>?) AND NOT EXISTS(${targets}) AND NOT EXISTS(SELECT 1 FROM effective_attempts a JOIN rounds r ON r.id=a.context_id WHERE a.user_id=? AND a.context_type='round' AND r.cycle=? AND a.verdict IN ('pending','needs_review'))`,roundId,userId,userId,round.cycle,round.number,userId,roundId,userId,userId,round.cycle),
+    stmt(db,`UPDATE rounds SET status='cleared' WHERE id=? AND user_id=? AND status='complete' AND NOT EXISTS(SELECT 1 FROM rounds WHERE user_id=? AND cycle=? AND number>?) AND NOT EXISTS(${targets})`,roundId,userId,userId,round.cycle,round.number,userId,roundId,userId),
   ]);
 }
 export async function roundProgress(db:D1Database,userId:string,roundId?:string) {
@@ -100,7 +100,8 @@ export async function roundProgress(db:D1Database,userId:string,roundId?:string)
 export async function nextExercise(db:D1Database,userId:string,contextType='round',contextId?:string) {
   let item:{question_id:string;version_id:string}|undefined,context:string,practice:Awaited<ReturnType<typeof practiceProgress>>|undefined;
   if(contextType==='round'){
-    const progress=await roundProgress(db,userId,contextId);
+    let progress=await roundProgress(db,userId,contextId);
+    if(progress.current&&!progress.next&&progress.current.status==='active'){await advanceRound(db,userId,progress.current.id,true);progress=await roundProgress(db,userId);}
     if(!progress.current)return { question:null,progress,contextType:'round',contextId:null,draft:null };
     context=progress.current.id;item=progress.next ?? undefined;
     if(!item)return { question:null,progress,contextType,contextId:context,draft:null };
@@ -333,7 +334,7 @@ export async function practiceProgress(db:D1Database,userId:string,setId:string)
  const source=await latestPracticeSet(db,userId,setId),items=await practiceRoundItems(db,userId,source.id);
  const counts={total:items.length,unanswered:0,pending:0,needs_review:0,correct:0,incorrect:0};
  for(const i of items)counts[i.verdict as keyof Omit<typeof counts,'total'>]++;
- if(!counts.unanswered&&!counts.pending&&!counts.needs_review&&counts.incorrect){
+ if(!counts.unanswered&&(counts.incorrect||counts.pending||counts.needs_review)){
   const next=await restartPracticeSet(db,userId,source.id);
   if(next.id!==source.id)return practiceProgress(db,userId,next.id);
  }
@@ -343,11 +344,11 @@ export async function practiceProgress(db:D1Database,userId:string,setId:string)
 export async function restartPracticeSet(db:D1Database,userId:string,setId:string){
  const source=await latestPracticeSet(db,userId,setId);setId=source.id;
  const items=await practiceRoundItems(db,userId,setId);
- if(items.some(i=>['unanswered','pending','needs_review'].includes(i.verdict)))return {id:setId,status:'ready'};
- if(!items.some(i=>i.verdict==='incorrect'))return {id:setId,status:'cleared'};
+ if(items.some(i=>i.verdict==='unanswered'))return {id:setId,status:'ready'};
+ if(!items.some(i=>['incorrect','pending','needs_review'].includes(i.verdict)))return {id:setId,status:'cleared'};
  const next=id();
- const ready="NOT EXISTS(SELECT 1 FROM practice_items i LEFT JOIN effective_attempts a ON a.context_type='practice' AND a.context_id=i.set_id AND a.question_id=i.question_id AND a.user_id=? WHERE i.set_id=? AND (a.id IS NULL OR a.verdict IN ('pending','needs_review')))";
- const incorrect="SELECT i.question_id,i.version_id,i.position,i.verification FROM practice_items i JOIN effective_attempts a ON a.context_type='practice' AND a.context_id=i.set_id AND a.question_id=i.question_id AND a.user_id=? WHERE i.set_id=? AND a.verdict='incorrect'";
+ const ready="NOT EXISTS(SELECT 1 FROM practice_items i LEFT JOIN effective_attempts a ON a.context_type='practice' AND a.context_id=i.set_id AND a.question_id=i.question_id AND a.user_id=? WHERE i.set_id=? AND a.id IS NULL)";
+ const incorrect="SELECT i.question_id,i.version_id,i.position,i.verification FROM practice_items i JOIN effective_attempts a ON a.context_type='practice' AND a.context_id=i.set_id AND a.question_id=i.question_id AND a.user_id=? WHERE i.set_id=? AND a.verdict IN ('incorrect','pending','needs_review')";
  await db.batch([
   stmt(db,`INSERT OR IGNORE INTO practice_sets(id,user_id,name,mode,origin,status,conditions,created_at) SELECT ?,?,?,?,?,'ready',json_set(?,'$.repeatedFrom',?,'$.count',(SELECT COUNT(*) FROM (${incorrect}))),? WHERE ${ready} AND EXISTS(${incorrect})`,next,userId,source.name,source.mode,source.origin,source.conditions,setId,userId,setId,now(),userId,setId,userId,setId),
   stmt(db,`INSERT INTO practice_items(set_id,question_id,version_id,position,verification) SELECT ?,question_id,version_id,position,verification FROM (${incorrect}) WHERE EXISTS(SELECT 1 FROM practice_sets WHERE id=?)`,next,userId,setId,next),

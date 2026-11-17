@@ -33,7 +33,4 @@ body[data-page=result] .main{min-height:100svh;margin:0 auto;padding-block:32px;
 .completion-actions{display:flex;flex-direction:column;gap:12px;width:min(100%,320px);margin:0 auto}
 .completion-actions>button,.completion-actions>a{width:100%}
 .completion-actions>a:not(.button){display:flex;align-items:center;justify-content:center;min-height:48px}
-.completion-reviews{max-width:480px;margin:0 auto 28px;border:0;border-radius:0}
-.completion-reviews .collection-item{min-height:56px;padding:12px 4px}
-.review-verdict{display:flex;align-items:center;gap:16px;font-size:13px}
 @media(max-width:640px){.completion-content h1{font-size:26px}}

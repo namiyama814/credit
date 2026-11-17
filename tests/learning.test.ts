@@ -27,10 +27,12 @@ describe('教材と学習履歴',()=>{
     await answer('fixture-1',['1']);p=await roundProgress(h.db,h.user);expect(p.current!.number).toBe(3);
     await answer('fixture-1',['0']);p=await roundProgress(h.db,h.user);expect(p.current!.status).toBe('cleared');expect(p.rounds).toHaveLength(3);
   });
-  it('採点待ちを完了扱いせず、手動確認後に次周回へ進む',async()=>{
+  it('採点未確定も次周回に回し、再回答で正解すると全問クリアする',async()=>{
     await insertQuestion(h.db,fixtureQuestion(0,'論述式'),0);await insertQuestion(h.db,fixtureQuestion(1),1);const r=await startRound(h.db,h.user);
-    const a=await answer('fixture-0','説明します');await answer('fixture-1',['1']);let p=await roundProgress(h.db,h.user);expect(p.current!.id).toBe(r.id);expect(p.counts.pending).toBe(1);
-    await recordEvaluation(h.db,h.user,a.attempt.id,evaluation('correct'),'manual');p=await roundProgress(h.db,h.user);expect(p.current!.number).toBe(2);expect(p.items.map(i=>i.question_id)).toEqual(['fixture-1']);
+    const a=await answer('fixture-0','説明します');await answer('fixture-1',['1']);await nextExercise(h.db,h.user);let p=await roundProgress(h.db,h.user);expect(p.current!.number).toBe(2);expect(p.items.map(i=>i.question_id)).toEqual(['fixture-0','fixture-1']);
+    await recordEvaluation(h.db,h.user,a.attempt.id,evaluation('correct'),'manual');
+    const retry=await answer('fixture-0','再回答');await recordEvaluation(h.db,h.user,retry.attempt.id,evaluation('correct'),'manual');await answer('fixture-1',['0']);
+    expect((await roundProgress(h.db,h.user)).current!.status).toBe('cleared');
   });
   it('確定済みの周回を変更せず、採点修正は補正周回へ送る',async()=>{
     await seed(1);await startRound(h.db,h.user);const a=await answer('fixture-0',['0']);expect((await roundProgress(h.db,h.user)).current!.status).toBe('cleared');
@@ -139,4 +141,18 @@ it('古い生成leaseで教材マスタや問題の版を上書きしない',asy
   const stale=await insertQuestion(h.db,{...fixtureQuestion(75),question_text:'古いworkerが遅れて返した問題'},75,'ai',undefined,undefined,{id:'nonexistent-job',lease:'old-lease'});
   expect((await h.db.prepare('SELECT current_version FROM questions WHERE id=?').bind(initial.id).first<{current_version:string}>())!.current_version).toBe(initial.version);
   expect(await h.db.prepare('SELECT 1 FROM question_versions WHERE id=?').bind(stale.version).first()).toBeNull();
+});
+
+it('要確認7問で止まった既存周回を始めると、正解を外して7問を再出題する',async()=>{
+ await insertQuestion(h.db,fixtureQuestion(0),0);
+ for(let i=1;i<=7;i++)await insertQuestion(h.db,fixtureQuestion(i,'論述式'),i);
+ const original=await startRound(h.db,h.user);await answer('fixture-0',['0']);
+ for(let i=1;i<=7;i++){
+  const a=await answer(`fixture-${i}`,'回答');
+  await recordEvaluation(h.db,h.user,a.attempt.id,{...evaluation('incorrect'),verdict:'needs_review',score:null},'manual');
+ }
+ expect((await roundProgress(h.db,h.user)).counts.needs_review).toBe(7);
+ const next=await startRound(h.db,h.user);expect(next.id).not.toBe(original.id);
+ const p=await roundProgress(h.db,h.user);expect(p.counts.unanswered).toBe(7);expect(p.items.map(i=>i.question_id)).not.toContain('fixture-0');
+ expect((await nextExercise(h.db,h.user)).question!.id).toBe('fixture-1');
 });

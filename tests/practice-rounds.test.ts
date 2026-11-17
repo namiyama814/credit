@@ -23,14 +23,16 @@ it('正解を外し不正解だけを自動周回して全問クリアし、元�
  const n=(await h.db.prepare('SELECT COUNT(*) AS n FROM practice_sets').first<{n:number}>())!.n;
  expect((await restartPracticeSet(h.db,h.user,set.id)).status).toBe('cleared');expect((await h.db.prepare('SELECT COUNT(*) AS n FROM practice_sets').first<{n:number}>())!.n).toBe(n);
 });
-it('採点待ちと要確認では進めず、採点確定後に不正解だけを残す',async()=>{
+it('採点待ちと要確認も次周回に回し、正解した問題は除外する',async()=>{
  await insertQuestion(h.db,fixtureQuestion(0,'論述式'),0);await insertQuestion(h.db,fixtureQuestion(1),1);
- const set=await createPracticeSet(h.db,h.user,{origin:'school',count:2,name:'採点を待つ'});
- const essay=await reply(set.id,'説明する回答です');await reply(set.id,['1']);
- let ex=await nextExercise(h.db,h.user,'practice',set.id);expect(ex.question).toBeNull();expect(ex.progress!.counts.pending).toBe(1);expect(ex.contextId).toBe(set.id);expect((await restartPracticeSet(h.db,h.user,set.id)).id).toBe(set.id);
+ const set=await createPracticeSet(h.db,h.user,{origin:'school',count:2,name:'止めずに周回'});
+ await reply(set.id,'説明する回答です');await reply(set.id,['0']);
+ let ex=await nextExercise(h.db,h.user,'practice',set.id);expect(ex.question!.id).toBe('fixture-0');expect(ex.contextId).not.toBe(set.id);
+ const second=ex.contextId!;const essay=await reply(set.id,'再回答');
  const evaluation:Evaluation={verdict:'needs_review',score:null,reason:'要確認',strengths:[],missing:[],improvement:'',model:'test',promptVersion:'test',rubricVersion:'test',gradedAt:now()};
- await recordEvaluation(h.db,h.user,essay.attempt.id,evaluation,'manual');ex=await nextExercise(h.db,h.user,'practice',set.id);expect(ex.progress!.counts.needs_review).toBe(1);expect(ex.contextId).toBe(set.id);
- await recordEvaluation(h.db,h.user,essay.attempt.id,{...evaluation,verdict:'correct',score:100},'manual');ex=await nextExercise(h.db,h.user,'practice',set.id);expect(ex.question!.id).toBe('fixture-1');expect(ex.contextId).not.toBe(set.id);
+ await recordEvaluation(h.db,h.user,essay.attempt.id,evaluation,'manual');ex=await nextExercise(h.db,h.user,'practice',set.id);expect(ex.question!.id).toBe('fixture-0');expect(ex.contextId).not.toBe(second);
+ const retry=await reply(set.id,'正しい回答');await recordEvaluation(h.db,h.user,retry.attempt.id,{...evaluation,verdict:'correct',score:100},'manual');
+ ex=await nextExercise(h.db,h.user,'practice',set.id);expect(ex.question).toBeNull();expect(ex.progress!.current!.status).toBe('cleared');
 });
 it('同時に次周回を開いても一つだけ作成し、問題の版を固定する',async()=>{
  const old=await insertQuestion(h.db,fixtureQuestion(0),0);const set=await createPracticeSet(h.db,h.user,{origin:'school',count:1,name:'同時周回'});await reply(set.id,['1']);

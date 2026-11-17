@@ -3,7 +3,6 @@ import { icon } from './icons';
 import type { nextExercise, getResult, practiceResults } from '../server/service';
 
 type Exercise=Awaited<ReturnType<typeof nextExercise>>;
-type RoundProgress=Awaited<ReturnType<typeof import('../server/service').roundProgress>>;
 type Result=Awaited<ReturnType<typeof getResult>>;
 type SafeQuestion=Result['question'];
 type Child=Node|string|null|undefined|false;
@@ -69,14 +68,8 @@ async function exercise(){
   }else data=await api<Exercise>(`/exercise?type=${encodeURIComponent(type)}${contextId?`&id=${encodeURIComponent(contextId)}`:''}`);
   if(!data.question){
     const progress='progress' in data?data.progress:undefined;
-    const unresolved=type==='round'&&progress ? (await api<RoundProgress>(`/rounds${data.contextId?`?id=${encodeURIComponent(data.contextId)}`:''}`)).items.filter(i=>i.verdict==='pending'||i.verdict==='needs_review') : [];
-    render(el('div',{class:'completion-content'},
-      el('h1',{},progress?.current?.status==='cleared'?'全問クリア':progress&&(progress.counts.pending||progress.counts.needs_review)?'採点を確認':'回答が完了しました'),
-      progress&&(type!=='practice'||!!(progress.counts.pending||progress.counts.needs_review))&&el('p',{},`採点待ち ${progress.counts.pending}問　要確認 ${progress.counts.needs_review}問`),
-      !!unresolved.length&&el('ul',{class:'collection-list completion-reviews',role:'list'},...unresolved.map((item,i)=>el('li',{},
-        el('a',{class:'collection-item',href:`/result/?id=${encodeURIComponent(item.attempt_id!)}&next=${encodeURIComponent('/exercise/')}`,'aria-label':`回答${i+1}の採点を確認`},
-          el('span',{},`回答 ${i+1}`),el('span',{class:'review-verdict'},verdicts[item.verdict],icon('chevron','collection-chevron')))))),
-      el('div',{class:'actions completion-actions'},progress&&progress.current?.status!=='cleared'&&button('採点結果を更新',exercise,true),link(type==='practice'?'問題集へ':'戻る',type==='practice'?'/practice/':'/',!progress||progress.current?.status==='cleared'))));return;
+    render(el('div',{class:'completion-content'},el('h1',{},progress?.current?.status==='cleared'?'全問クリア':'回答が完了しました'),
+      el('div',{class:'actions completion-actions'},link(type==='practice'?'問題集へ':'戻る',type==='practice'?'/practice/':'/',true))));return;
   }
   const q=data.question;
   if(!q.gradable){render(el('h1',{},'振り返り'),questionBody(q),el('p',{class:'message'},'正答未確認のため採点対象外です。'),link('問題一覧へ','/questions/'));return;}
@@ -133,14 +126,10 @@ async function resultPage(){
   const response=Array.isArray(r.attempt.response)?r.question.choices.filter(c=>(r.attempt.response as string[]).includes(c.id)).map(c=>c.text).join('\n'):String(r.attempt.response);
   const answerBlock=(label:string,value:string)=>el('section',{class:'result-answer'},el('h2',{},label),formatText(value));
   const symbol=r.attempt.verdict==='correct'?'correct':r.attempt.verdict==='incorrect'?'incorrect':r.attempt.verdict==='pending'?'pending':'review';
-  const needsReview=r.attempt.verdict==='needs_review';
-  const reason=textField('採点の修正理由');reason.input.maxLength=1000;
-  const correct=async(verdict:'correct'|'incorrect')=>{if(!reason.input.value.trim())throw new Error('採点の修正理由を入力してください。');await api(`/results/${encodeURIComponent(attemptId)}/correct`,{verdict,reason:reason.input.value.trim()});location.assign(nextURL);};
   render(el('div',{class:'result-content'},el('div',{class:'result-status'},icon(symbol,'result-symbol'),el('h1',{class:'result-label'},verdicts[r.attempt.verdict])),
     el('div',{class:'result-answers'},answerBlock('あなたの回答',response),answerBlock(String(r.answerKind),r.correctAnswer)),
     r.explanation&&el('section',{class:'result-explanation'},el('h2',{},'解説'),formatText(r.explanation)),
     r.attempt.method!=='rule'&&evaluation.reason&&el('section',{class:'result-explanation'},el('h2',{},'参考評価'),formatText(evaluation.reason),evaluation.improvement&&formatText(evaluation.improvement)),
-    needsReview&&el('section',{class:'result-explanation'},el('h2',{},'採点を確認'),canManage?el('div',{},reason.node,el('div',{class:'actions'},button('正解として確定',()=>correct('correct')),button('不正解として確定',()=>correct('incorrect'))),r.question.type==='論述式'&&button('AIで再採点',async()=>{await api(`/results/${encodeURIComponent(attemptId)}/regrade`,{});await resultPage();})):link('本人認証して採点を確認',`/auth/github?next=${encodeURIComponent(location.pathname+location.search)}`)),
     el('div',{class:'result-footer'},r.attempt.verdict==='pending'&&button('採点結果を更新',resultPage),link('次の問題へ',nextURL,true))));
 
 }
