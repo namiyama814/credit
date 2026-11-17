@@ -52,3 +52,55 @@ test('問題集も正解を外して不正解だけを周回し、一覧から�
  await page.goto(`/exercise/?type=practice&id=${set.id}`);await expect(page.getByRole('heading',{name:'全問クリア',exact:true})).toBeVisible();
  expect((await (await request.get(`/api/practice/${set.id}`)).json()).items.map((i:{verdict:string})=>i.verdict)).toEqual(['correct','incorrect']);expect(await (await request.get('/api/rounds')).json()).toEqual(before);
 });
+
+test('要確認7問で止まった通常周回から回答を開き、採点を確定できる',async({page})=>{
+ let corrected=false;
+ const items=Array.from({length:7},(_,i)=>({question_id:`q${i}`,attempt_id:`a${i}`,verdict:'needs_review'}));
+ const progress={current:{id:'stuck',status:'active'},counts:{pending:0,needs_review:7},items};
+ await page.route('**/api/**',async route=>{
+  const path=new URL(route.request().url()).pathname;
+  if(path==='/api/me')return route.fulfill({json:{userId:'test-owner',csrf:'test',canManage:true}});
+  if(path==='/api/rounds')return route.fulfill({json:progress});
+  if(path==='/api/rounds/start')return route.fulfill({json:progress.current});
+  if(path==='/api/exercise')return route.fulfill({json:{question:null,progress,contextId:'stuck'}});
+  if(path==='/api/results/a0/correct'){
+   expect(route.request().postDataJSON()).toEqual({verdict:'incorrect',reason:'解答例の重要な概念が不足'});corrected=true;
+   return route.fulfill({json:{}});
+  }
+  if(path==='/api/results/a0')return route.fulfill({json:{attempt:{id:'a0',verdict:'needs_review',response:'回答',method:'ai',evaluation_data:{reason:'採点失敗',improvement:''}},question:{type:'論述式',choices:[]},answerKind:'解答例',correctAnswer:'参考解答',explanation:''}});
+  return route.abort();
+ });
+ await page.goto('/');await page.getByRole('button',{name:'始める',exact:true}).click();
+ await expect(page.getByRole('heading',{name:'採点を確認'})).toBeVisible();
+ await expect(page.getByRole('link',{name:/回答\d+の採点を確認/})).toHaveCount(7);
+ await page.getByRole('link',{name:'回答1の採点を確認',exact:true}).click();
+ await expect(page.getByText('参考解答',{exact:true})).toBeVisible();
+ await page.getByRole('textbox',{name:'採点の修正理由'}).fill('解答例の重要な概念が不足');
+ await page.getByRole('button',{name:'不正解として確定'}).click();
+ await expect(page).toHaveURL(/\/exercise\/$/u);expect(corrected).toBe(true);
+});
+
+test('結果と採点確認を画面中央に揃え、長文は先頭からスクロールできる',async({page})=>{
+ let long=false;
+ await page.route('**/api/**',route=>{
+  const path=new URL(route.request().url()).pathname;
+  if(path==='/api/me')return route.fulfill({json:{userId:'test',csrf:'test',canManage:false}});
+  if(path==='/api/results/center')return route.fulfill({json:{attempt:{verdict:'correct',response:'回答',method:'rule',evaluation_data:{}},question:{choices:[]},answerKind:'正答',correctAnswer:'正答',explanation:long?'長文の解説。'.repeat(700):'解説'}});
+  const progress={current:{id:'center',status:'active'},counts:{pending:0,needs_review:7},items:[]};
+  return route.fulfill({json:path==='/api/rounds'?progress:{question:null,progress,contextId:'center'}});
+ });
+ for(const width of [390,1280]){
+  await page.setViewportSize({width,height:900});
+  for(const path of ['/result/?id=center','/exercise/']){
+   await page.goto(path);const content=page.locator('.result-content,.completion-content');await expect(content).toBeVisible();await page.evaluate(()=>document.fonts.ready);
+   const bounds=await content.boundingBox();expect(bounds).not.toBeNull();
+   expect(Math.abs(bounds!.y+bounds!.height/2-450)).toBeLessThan(2);
+   expect(Math.abs(bounds!.x+bounds!.width/2-width/2)).toBeLessThan(2);
+   const heading=await page.locator('h1').boundingBox();expect(Math.abs(heading!.x+heading!.width/2-width/2)).toBeLessThan(40);
+   expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+  }
+ }
+ long=true;await page.setViewportSize({width:390,height:844});await page.goto('/result/?id=center');await expect(page.getByRole('heading',{name:'正解',exact:true})).toBeVisible();
+ expect((await page.locator('.result-content').boundingBox())!.y).toBeGreaterThanOrEqual(32);
+ await page.getByRole('link',{name:'次の問題へ'}).scrollIntoViewIfNeeded();await expect(page.getByRole('link',{name:'次の問題へ'})).toBeInViewport();
+});

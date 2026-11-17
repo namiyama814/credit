@@ -20,3 +20,20 @@ input:not([type=checkbox]):not([type=radio]):not([type=file]),textarea,select{fo
 .practice-state{display:block;font-size:.85rem}.practice-question{margin-block:24px;padding-block:16px;border-top:1px solid var(--ink)}
 
 .prose{min-width:0}.prose .katex{white-space:normal;color:inherit}.prose .katex-display{max-width:100%;overflow-x:auto;overflow-y:hidden;padding:4px 0;margin:12px 0}.choice>.prose{flex:1;min-width:0}.prose .katex .base{white-space:nowrap}
+
+/* Short study screens share a viewport-centered content area; long answers scroll. */
+body[data-page=result] .main{min-height:100svh;margin:0 auto;padding-block:32px;display:flex;flex-direction:column;justify-content:center}
+.result-content,.completion-content{width:100%;min-width:0}
+.result-status{justify-content:center}
+.result-footer{position:static;padding:0;margin-top:28px}
+.result-footer>.button,.result-footer>button{min-height:48px}
+.completion-content{text-align:center}
+.completion-content h1{font-size:28px;margin-bottom:20px}
+.completion-content>p{margin-bottom:28px}
+.completion-actions,.completion-reviews{display:flex;flex-direction:column;gap:12px;width:min(100%,320px);margin:0 auto}
+.completion-actions>button,.completion-actions>a{width:100%}
+.completion-actions>a:not(.button){display:flex;align-items:center;justify-content:center;min-height:48px}
+.completion-reviews{margin-top:28px}
+.completion-reviews:empty{display:none}
+.completion-reviews>a{display:flex;align-items:center;justify-content:center;min-height:48px;border:1px solid var(--ink);border-radius:8px;padding:10px 22px;font-weight:600}
+@media(max-width:640px){.completion-content h1{font-size:26px}}
