@@ -134,7 +134,7 @@ async function resultPage(){
 
 }
 type Practice=Awaited<ReturnType<typeof practiceResults>>;
-const practiceStatus:Record<string,string>={generating:'生成中',draft:'採用待ち',ready:'利用可能',failed:'生成失敗'};
+const practiceStatus:Record<string,string>={generating:'作成待ち',draft:'採用待ち',ready:'利用可能',failed:'生成失敗'};
 function practiceState(status:string,jobs:{kind:string;status:string|null;phase:string|null;last_error?:string|null}[]){
   const job=jobs.find(j=>j.kind==='generate');
   if(status==='generating'){
