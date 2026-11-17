@@ -22,7 +22,7 @@ export interface Evaluation {
 }
 export const AIGrading = z.object({
   score: z.number().min(0).max(100),
-  verdict: z.enum(['correct', 'incorrect', 'needs_review']),
+  verdict: z.enum(['correct', 'incorrect']),
   confidence: z.number().min(0).max(1),
   reason: z.string().max(2000).regex(/[ぁ-んァ-ヶ一-龯]/u), strengths: z.array(z.string().max(500)).max(10),
   missing: z.array(z.string().max(500)).max(10), improvement: z.string().max(2000),
@@ -95,7 +95,6 @@ export function gradeRule(rule: GradingRule, response: string | string[]): Evalu
     const caseOK = !rule.requiredCase || value === (rule.requiredCase === 'upper' ? value.toUpperCase() : value.toLowerCase());
     const widthOK = rule.width !== 'half' || !/[Ａ-Ｚａ-ｚ０-９]/u.test(value);
     verdict = caseOK && widthOK && rule.accepted.some(v => normalize(v) === normalize(value)) ? 'correct' : 'incorrect';
-    if (verdict === 'incorrect' && /[、,／/]|または|あるいは/u.test(value)) verdict = 'needs_review';
   }
   return { verdict, score: verdict === 'correct' ? 100 : verdict === 'incorrect' ? 0 : null,
     reason: verdict === 'correct' ? '正答と一致しています。' : verdict === 'incorrect' ? '正答または指定された表記条件と一致しません。' : verdict === 'pending' ? 'AI採点待ち' : '採点を確認してください。',
