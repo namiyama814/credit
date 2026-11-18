@@ -122,7 +122,14 @@ async function exercise(){
 async function resultPage(){
   const attemptId=params.get('id');if(!attemptId)throw new Error('回答を選択してください。');
   const r=await api<Result>(`/results/${encodeURIComponent(attemptId)}`),evaluation=r.attempt.evaluation_data as {reason:string;improvement:string};
-  const nextURL=nextStudyURL(params.get('next'));
+  let nextURL=nextStudyURL(params.get('next')),nextLabel='次の問題へ';
+  if(r.attempt.context_type==='practice'){
+    const p=await api<Practice>(`/practice/${encodeURIComponent(r.attempt.context_id)}`);
+    if(p.items.length&&p.items.every(i=>i.verdict!=='unanswered')){
+      nextURL=`/practice/?id=${encodeURIComponent(p.set.id)}&results=1`;nextLabel='採点結果を見る';
+    }
+  }
+  if(new URL(nextURL,location.origin).searchParams.get('results')==='1')nextLabel='採点結果を見る';
   const response=Array.isArray(r.attempt.response)?r.question.choices.filter(c=>(r.attempt.response as string[]).includes(c.id)).map(c=>c.text).join('\n'):String(r.attempt.response);
   const answerBlock=(label:string,value:string)=>el('section',{class:'result-answer'},el('h2',{},label),formatText(value));
   const symbol=r.attempt.verdict==='correct'?'correct':r.attempt.verdict==='incorrect'?'incorrect':r.attempt.verdict==='pending'?'pending':'review';
@@ -130,7 +137,7 @@ async function resultPage(){
     el('div',{class:'result-answers'},answerBlock('あなたの回答',response),answerBlock(String(r.answerKind),r.correctAnswer)),
     r.explanation&&el('section',{class:'result-explanation'},el('h2',{},'解説'),formatText(r.explanation)),
     r.attempt.method!=='rule'&&evaluation.reason&&el('section',{class:'result-explanation'},el('h2',{},'参考評価'),formatText(evaluation.reason),evaluation.improvement&&formatText(evaluation.improvement)),
-    el('div',{class:'result-footer'},r.attempt.verdict==='pending'&&button('採点結果を更新',resultPage),link('次の問題へ',nextURL,true))));
+    el('div',{class:'result-footer'},r.attempt.verdict==='pending'&&button('採点結果を更新',resultPage),link(nextLabel,nextURL,true))));
 
 }
 type Practice=Awaited<ReturnType<typeof practiceResults>>;
@@ -150,6 +157,13 @@ async function practicePage(){
   const setId=params.get('id');
   if(setId){
     const p=await api<Practice>(`/practice/${encodeURIComponent(setId)}`);
+    if(p.set.status==='ready'&&params.get('results')==='1'){
+      const correct=p.items.filter(i=>i.verdict==='correct').length;
+      render(el('div',{class:'completion-content'},
+        el('p',{class:'stat-number'},`${p.items.length}問中${correct}問正解`),
+        el('div',{class:'actions completion-actions'},link('問題集へ','/practice/',true))));
+      return;
+    }
     if(p.set.status==='ready'){location.replace(`/exercise/?type=practice&id=${encodeURIComponent(setId)}`);return;}
     const job=p.jobs.find(j=>j.kind==='generate');
     const retry=p.set.status==='failed';
