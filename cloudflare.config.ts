@@ -18,7 +18,7 @@ export default defineConfig(({ mode }) => {
         AI: bindings.ai({ dev: { remote: process.env.AI_REMOTE === 'true' } }),
         APP_ORIGIN: bindings.text(development ? `http://127.0.0.1:${process.env.APP_TEST_PORT ?? '4321'}` : 'https://info1-study.namiyama814.workers.dev'),
         OWNER_GITHUB_ID: bindings.text(process.env.OWNER_GITHUB_ID ?? '253646578'),
-        AI_MODEL: bindings.text('@cf/google/gemma-4-26b-a4b-it'),
+        AI_MODEL: bindings.text('@cf/zai-org/glm-4.7-flash'),
         AI_DAILY_NEURONS: bindings.text('8000'),
         APP_MODE: bindings.text(test ? 'test' : development ? 'development' : 'production'),
         GITHUB_CLIENT_ID: test ? bindings.text('test-client') : bindings.secret(),

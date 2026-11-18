@@ -12,7 +12,7 @@ function ai(fn:()=>Promise<unknown>){Object.defineProperty(h.env,'AI',{value:{ru
 async function pending(){const q=await insertQuestion(h.db,fixtureQuestion(0,'論述式'),0);const r=await startRound(h.db,h.user);return submitAnswer(h.db,h.user,{id:id(),contextType:'round',contextId:r.id,questionId:q.id,versionId:q.version,response:'必要な概念を説明した回答',durationMs:1000});}
 it('論述は構造化した意味評価で採点し、履歴へモデルとバージョンを保存する',async()=>{
  const a=await pending();ai(async()=>({response:grade}));await processJobs(h.env,1);
- const r=await h.db.prepare('SELECT * FROM effective_attempts WHERE id=?').bind(a.attempt.id).first<{verdict:string;evaluation_data:string}>();expect(r!.verdict).toBe('correct');expect(JSON.parse(r!.evaluation_data)).toMatchObject({model:'@cf/google/gemma-4-26b-a4b-it',promptVersion:'essay-v4-binary'});expect((await roundProgress(h.db,h.user)).current!.status).toBe('cleared');
+ const r=await h.db.prepare('SELECT * FROM effective_attempts WHERE id=?').bind(a.attempt.id).first<{verdict:string;evaluation_data:string}>();expect(r!.verdict).toBe('correct');expect(JSON.parse(r!.evaluation_data)).toMatchObject({model:'@cf/zai-org/glm-4.7-flash',promptVersion:'essay-v5-compact'});expect((await roundProgress(h.db,h.user)).current!.status).toBe('cleared');
 });
 it('不正な構造化出力は正誤判定せず自動再試行を継続する',async()=>{
  const a=await pending();ai(async()=>({response:'invalid JSON'}));for(let i=0;i<3;i++){await h.db.prepare("UPDATE jobs SET next_at=?").bind('2000-01-01T00:00:00.000Z').run();await processJobs(h.env,1);}
@@ -70,4 +70,22 @@ it('保存済みの要確認を二択に変換し、採点失敗は自動再試�
  expect(await h.db.prepare('SELECT verdict,score FROM effective_attempts WHERE id=?').bind(a.attempt.id).first()).toMatchObject({verdict:'incorrect',score:70});
  expect(await h.db.prepare('SELECT verdict FROM effective_attempts WHERE id=?').bind(b.attempt.id).first()).toMatchObject({verdict:'pending'});
  expect(await h.db.prepare("SELECT status FROM jobs WHERE json_extract(payload,'$.attemptId')=?").bind(b.attempt.id).first()).toMatchObject({status:'pending'});
+});
+
+it('軽量採点は正誤と短い理由だけを要求し、計測時間を保存する',async()=>{
+ const a=await pending();ai(async()=>({response:{verdict:'incorrect',reason:'必須概念が不足しています。'}}));await processJobs(h.env,1,a.attempt.id);
+ expect(h.env.AI.run).toHaveBeenCalledWith('@cf/zai-org/glm-4.7-flash',expect.objectContaining({max_tokens:256,chat_template_kwargs:{enable_thinking:false}}),expect.objectContaining({signal:expect.any(AbortSignal)}));
+ const r=await h.db.prepare('SELECT evaluation_data FROM effective_attempts WHERE id=?').bind(a.attempt.id).first<{evaluation_data:string}>();
+ expect(JSON.parse(r!.evaluation_data)).toMatchObject({verdict:'incorrect',inferenceMs:expect.any(Number),totalMs:expect.any(Number)});
+});
+it('送信した回答を優先し、別の採点待ちを先に処理しない',async()=>{
+ const a=await pending(),b=await pending();ai(async()=>({response:{verdict:'correct',reason:'必要な内容を満たします。'}}));await processJobs(h.env,1,b.attempt.id);
+ expect(await h.db.prepare('SELECT verdict FROM effective_attempts WHERE id=?').bind(a.attempt.id).first()).toMatchObject({verdict:'pending'});
+ expect(await h.db.prepare('SELECT verdict FROM effective_attempts WHERE id=?').bind(b.attempt.id).first()).toMatchObject({verdict:'correct'});
+});
+
+it('時間制限のエラーを無料枠切れとして翌日まで保留しない',async()=>{
+ await pending();ai(async()=>{throw new Error('time limit exceeded');});await processJobs(h.env,1);
+ const job=await h.db.prepare('SELECT status,next_at,lease_until FROM jobs').first<{status:string;next_at:string;lease_until:string|null}>();
+ expect(job!.status).toBe('pending');expect(job!.lease_until).toBeNull();expect(Date.parse(job!.next_at)-Date.now()).toBeLessThan(15000);
 });

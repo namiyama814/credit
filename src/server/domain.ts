@@ -18,7 +18,7 @@ export interface GradingRule {
 export interface Evaluation {
   verdict: Verdict; score: number | null; reason: string; strengths: string[];
   missing: string[]; improvement: string; model: string; promptVersion: string;
-  rubricVersion: string; gradedAt: string; confidence?: number; components?: {concepts:number;accuracy:number;conditions:number}; essentialConceptsMet?:boolean; criticalError?:boolean;
+  rubricVersion: string; gradedAt: string; inferenceMs?:number; totalMs?:number; confidence?: number; components?: {concepts:number;accuracy:number;conditions:number}; essentialConceptsMet?:boolean; criticalError?:boolean;
 }
 export const AIGrading = z.object({
   score: z.number().min(0).max(100),

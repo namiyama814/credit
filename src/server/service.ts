@@ -171,14 +171,14 @@ export async function getResult(db:D1Database,userId:string,attemptId:string){
   const evaluations=(await stmt(db,'SELECT id,verdict,score,method,data,created_at FROM evaluations WHERE attempt_id=? ORDER BY seq',a.id).all<{id:string;verdict:string;score:number|null;method:string;data:string;created_at:string}>()).results.map(e=>({...e,data:parseJSON(e.data)}));
   return {attempt:{...a,response:parseJSON(a.response),evaluation_data:parseJSON(a.evaluation_data)},question:safeQuestion(q,row.id,parseJSON<string[]>(row.tags),row.origin),correctAnswer:q.correct_answer,answerKind:q.answer_kind ?? (q.question_type==='論述式'?'解答例':'正答'),explanation:q.explanation,teacherComment:q.teacher_comment ?? '',evaluations};
 }
-export async function recordEvaluation(db:D1Database,userId:string,attemptId:string,evaluation:Evaluation,method:'ai'|'manual',expected?:{seq:number;jobId:string;lease:string|null;status?:'running'|'failed'}){
+export async function recordEvaluation(db:D1Database,userId:string,attemptId:string,evaluation:Evaluation,method:'ai'|'manual',expected?:{seq:number;jobId?:string;lease?:string|null;status?:'running'|'failed'}){
   const a=await stmt(db,'SELECT a.*,r.status AS round_status FROM effective_attempts a LEFT JOIN rounds r ON r.id=a.context_id AND a.context_type=\'round\' WHERE a.id=? AND a.user_id=?',attemptId,userId).first<AttemptRow&{round_status:string|null}>();
   if(!a)throw new AppError(404,'回答が見つかりません。');
   const evaluationId=id();
   const argumentsForEvaluation=[evaluationId,a.id,evaluation.verdict,evaluation.score,method,JSON.stringify(evaluation),now()];
-  const guard=expected?' WHERE EXISTS(SELECT 1 FROM effective_attempts WHERE id=? AND evaluation_seq=?) AND EXISTS(SELECT 1 FROM jobs WHERE id=? AND status=? AND lease_until IS ?)':'';
-  const statements=[stmt(db,'INSERT INTO evaluations(id,attempt_id,verdict,score,method,data,created_at) SELECT ?,?,?,?,?,?,?'+guard,...argumentsForEvaluation,...(expected?[a.id,expected.seq,expected.jobId,expected.status??'running',expected.lease]:[]))];
-  if(method==='manual')statements.push(stmt(db,"UPDATE jobs SET status='done',lease_until=NULL,updated_at=? WHERE kind='grade' AND user_id=? AND json_extract(payload,'$.attemptId')=? AND status!='done'",now(),userId,attemptId));
+  const guard=expected?' WHERE EXISTS(SELECT 1 FROM effective_attempts WHERE id=? AND evaluation_seq=?)'+(expected.jobId?' AND EXISTS(SELECT 1 FROM jobs WHERE id=? AND status=? AND lease_until IS ?)':''):'';
+  const statements=[stmt(db,'INSERT INTO evaluations(id,attempt_id,verdict,score,method,data,created_at) SELECT ?,?,?,?,?,?,?'+guard,...argumentsForEvaluation,...(expected?[a.id,expected.seq,...(expected.jobId?[expected.jobId,expected.status??'running',expected.lease??null]:[])]:[]))];
+  if(method==='manual'||evaluation.promptVersion==='mcp-ai-v1')statements.push(stmt(db,"UPDATE jobs SET status='done',lease_until=NULL,updated_at=? WHERE kind='grade' AND user_id=? AND json_extract(payload,'$.attemptId')=? AND status!='done' AND EXISTS(SELECT 1 FROM evaluations WHERE id=?)",now(),userId,attemptId,evaluationId));
   if(a.context_type==='round'&&a.round_status!=='active'&&evaluation.verdict==='incorrect')statements.push(stmt(db,'INSERT INTO review_debts(user_id,question_id,version_id,created_at) SELECT ?,?,?,? WHERE EXISTS(SELECT 1 FROM evaluations WHERE id=?) ON CONFLICT(user_id,question_id) DO UPDATE SET version_id=excluded.version_id,created_at=excluded.created_at',userId,a.question_id,a.version_id,now(),evaluationId));
   if(evaluation.verdict==='correct')statements.push(stmt(db,'DELETE FROM review_debts WHERE user_id=? AND question_id=? AND EXISTS(SELECT 1 FROM evaluations WHERE id=?)',userId,a.question_id,evaluationId));
   const recorded=await db.batch(statements);

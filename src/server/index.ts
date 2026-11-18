@@ -74,7 +74,10 @@ app.get('/api/rounds',async c=>c.json(await roundProgress(c.env.DB,c.get('userId
 app.get('/api/exercise',async c=>c.json(await nextExercise(c.env.DB,c.get('userId'),c.req.query('type')??'round',c.req.query('id'))));
 app.post('/api/answers',async c=>{
   const result=await submitAnswer(c.env.DB,c.get('userId'),await c.req.json());
-  if(result.attempt.verdict==='pending')c.executionCtx.waitUntil(processJobs(c.env,1));
+  if(result.attempt.verdict==='pending'){
+    await processJobs(c.env,1,result.attempt.id);
+    return c.json(await getResult(c.env.DB,c.get('userId'),result.attempt.id));
+  }
   return c.json(result);
 });
 app.get('/api/results/:id',async c=>c.json(await getResult(c.env.DB,c.get('userId'),c.req.param('id'))));

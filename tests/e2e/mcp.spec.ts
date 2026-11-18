@@ -21,14 +21,14 @@ async function authorize(page:Page,request:APIRequestContext,scopes:string,githu
  const token=await request.post('/oauth/token',{form:{grant_type:'authorization_code',client_id:clientId,redirect_uri:callback,code:code!,code_verifier:verifier,resource:`${origin}/mcp`}});
  expect(token.ok()).toBe(true);const tokens=await token.json();expect(tokens.access_token).toBeTruthy();return {tokens,clientId};
 }
-test('OAuth認可後、実際のMCP SDKクライアントで全13ツールを呼ぶ',async({page,request})=>{
+test('OAuth認可後、実際のMCP SDKクライアントで全15ツールを呼ぶ',async({page,request})=>{
  const metadata=await (await request.get('/.well-known/oauth-authorization-server')).json();expect(metadata.scopes_supported).toEqual(expect.arrayContaining(['questions:read','practice:write']));
  const resource=await (await request.get('/.well-known/oauth-protected-resource/mcp')).json();expect(resource.scopes_supported).toEqual(['learning:read']);
  const {tokens,clientId}=await authorize(page,request,'learning:read questions:read answers:read practice:write offline_access');
  const client=new Client({name:'info1-integration',version:'1.0.0'});
  await client.connect(new StreamableHTTPClientTransport(new URL(`${origin}/mcp`),{requestInit:{headers:{Authorization:`Bearer ${tokens.access_token}`}}}));
  try{
-  const tools=await client.listTools();expect(tools.tools).toHaveLength(13);expect(tools.tools.find(t=>t.name==='create_practice_set')?._meta?.securitySchemes).toEqual([{type:'oauth2',scopes:['learning:read','practice:write']}]);
+  const tools=await client.listTools();expect(tools.tools).toHaveLength(15);expect(tools.tools.find(t=>t.name==='create_practice_set')?._meta?.securitySchemes).toEqual([{type:'oauth2',scopes:['learning:read','practice:write']}]);
   const calls:[string,Record<string,unknown>][]=[['get_learning_context',{}],['get_round_progress',{}],['get_weak_topics',{}],['get_answer_history',{}],['get_question_details',{questionId:'fixture-0',includeAnswer:true}],['search_questions',{}],['recommend_questions',{}],['get_ai_grading_results',{}]];
   for(const [name,args]of calls){const result=await client.callTool({name,arguments:args});expect(result.isError,`${name}: ${JSON.stringify(result)}`).not.toBe(true);}
   const created=await client.callTool({name:'create_practice_set',arguments:{origin:'school',name:'MCPからの復習',count:1}});expect(created.isError).not.toBe(true);const setId=(created.structuredContent as {data:{id:string}}).data.id;

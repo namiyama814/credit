@@ -78,3 +78,15 @@ test('結果と採点確認を画面中央に揃え、長文は先頭からス�
  expect((await page.locator('.result-content').boundingBox())!.y).toBeGreaterThanOrEqual(32);
  await page.getByRole('link',{name:'次の問題へ'}).scrollIntoViewIfNeeded();await expect(page.getByRole('link',{name:'次の問題へ'})).toBeInViewport();
 });
+
+test('採点待ちは完了時に自動反映する',async({page})=>{
+ let calls=0;
+ await page.route('**/api/**',route=>{
+  const path=new URL(route.request().url()).pathname;
+  if(path==='/api/me')return route.fulfill({json:{userId:'test',csrf:'test'}});
+  const pending=calls++===0;
+  return route.fulfill({json:{attempt:{verdict:pending?'pending':'correct',response:'回答',method:'ai',evaluation_data:{reason:'必須概念を満たします。'}},question:{choices:[]},answerKind:'解答例',correctAnswer:'回答',explanation:''}});
+ });
+ await page.goto('/result/?id=poll');await expect(page.getByRole('heading',{name:'採点待ち',exact:true})).toBeVisible();
+ await expect(page.getByRole('heading',{name:'正解',exact:true})).toBeVisible();
+});

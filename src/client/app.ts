@@ -10,6 +10,7 @@ const root=document.querySelector<HTMLElement>('#app')!;
 const page=document.body.dataset.page!;
 let csrf='',userId='',canManage=false;
 let practiceRefresh:ReturnType<typeof setTimeout>|undefined;
+let resultRefresh:ReturnType<typeof setTimeout>|undefined;
 const params=new URLSearchParams(location.search);
 const verdicts:Record<string,string>={correct:'正解',incorrect:'不正解',pending:'採点待ち',needs_review:'要確認',unanswered:'未回答'};
 function el<K extends keyof HTMLElementTagNameMap>(tag:K,attrs:Record<string,string|number|boolean>={},...children:Child[]):HTMLElementTagNameMap[K]{
@@ -102,6 +103,7 @@ async function exercise(){
     pending??={id:crypto.randomUUID(),response,durationMs:Math.min(86400000,Math.round(elapsed)),versionId:q.versionId};
     localWrite(pendingKey,JSON.stringify(pending));
     controls.forEach(b=>b.disabled=true);if(textarea)textarea.disabled=true;
+    if(q.type==='論述式')submit.textContent='採点中';
     try{
       const result=await api<Result>('/answers',{...pending,contextType:data.contextType,contextId:context,questionId:q.id,versionId:q.versionId});
       submitted=true;localRemove(draftKey);localRemove(pendingKey);clearInterval(interval);
@@ -113,13 +115,14 @@ async function exercise(){
         if(error.status===409){localRemove(draftKey);await exercise();}
       }
       throw error;
-    }finally{submitting=false;}
+    }finally{submitting=false;submit.textContent='送信';}
   },true);
   const onPageHide=()=>{if(!submitting&&!submitted)localSave();};window.addEventListener('pagehide',onPageHide);
   disposeExercise=()=>{clearInterval(interval);clearTimeout(timer);window.removeEventListener('pagehide',onPageHide);};
   render(el('div',{class:'exercise-content'},questionBody(q),inputArea,el('div',{class:'exercise-footer'},submit)));
 }
 async function resultPage(){
+  clearTimeout(resultRefresh);
   const attemptId=params.get('id');if(!attemptId)throw new Error('回答を選択してください。');
   const r=await api<Result>(`/results/${encodeURIComponent(attemptId)}`),evaluation=r.attempt.evaluation_data as {reason:string;improvement:string};
   let nextURL=nextStudyURL(params.get('next')),nextLabel='次の問題へ';
@@ -138,6 +141,7 @@ async function resultPage(){
     r.explanation&&el('section',{class:'result-explanation'},el('h2',{},'解説'),formatText(r.explanation)),
     r.attempt.method!=='rule'&&evaluation.reason&&el('section',{class:'result-explanation'},el('h2',{},'参考評価'),formatText(evaluation.reason),evaluation.improvement&&formatText(evaluation.improvement)),
     el('div',{class:'result-footer'},r.attempt.verdict==='pending'&&button('採点結果を更新',resultPage),link(nextLabel,nextURL,true))));
+  if(r.attempt.verdict==='pending')resultRefresh=setTimeout(()=>void resultPage().catch(e=>flash(e.message)),2000);
 
 }
 type Practice=Awaited<ReturnType<typeof practiceResults>>;
@@ -162,6 +166,7 @@ async function practicePage(){
       render(el('div',{class:'completion-content'},
         el('p',{class:'stat-number'},`${p.items.length}問中${correct}問正解`),
         el('div',{class:'actions completion-actions'},link('問題集へ','/practice/',true))));
+      if(p.items.some(i=>i.verdict==='pending'))practiceRefresh=setTimeout(()=>void practicePage().catch(e=>flash(e.message)),2000);
       return;
     }
     if(p.set.status==='ready'){location.replace(`/exercise/?type=practice&id=${encodeURIComponent(setId)}`);return;}

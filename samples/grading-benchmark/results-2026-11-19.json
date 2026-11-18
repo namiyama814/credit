@@ -1,0 +1,89 @@
+{
+  "measuredOn": "2026-11-19",
+  "timezone": "Asia/Tokyo",
+  "baselineCommit": "ad6e715",
+  "beforeModel": "@cf/google/gemma-4-26b-a4b-it",
+  "afterModel": "@cf/zai-org/glm-4.7-flash",
+  "afterPromptVersion": "essay-v5-compact",
+  "method": "Three synthetic answers (correct, inverted facts, incomplete explanation) to the same Japanese compression question. Real Workers AI calls via cf CLI. elapsedMs includes CLI startup, network and inference. Baseline measurements retained; after measurements repeated with final prompt. No production learning history modified.",
+  "limitations": "Small sample of one question; not a comprehensive grading accuracy benchmark or production latency guarantee. One baseline response failed format validation.",
+  "comparison": [
+    {
+      "sample": "correct",
+      "mode": "before",
+      "elapsedMs": 23274,
+      "exitCode": 0,
+      "verdict": "correct",
+      "expected": "correct",
+      "valid": true
+    },
+    {
+      "sample": "incorrect",
+      "mode": "before",
+      "elapsedMs": 48110,
+      "exitCode": 0,
+      "expected": "incorrect",
+      "valid": false,
+      "error": "invalid_response"
+    },
+    {
+      "sample": "incomplete",
+      "mode": "before",
+      "elapsedMs": 31554,
+      "exitCode": 0,
+      "verdict": "incorrect",
+      "expected": "incorrect",
+      "valid": true
+    },
+    {
+      "sample": "correct",
+      "mode": "after",
+      "elapsedMs": 1889,
+      "exitCode": 0,
+      "verdict": "correct",
+      "expected": "correct",
+      "valid": true
+    },
+    {
+      "sample": "incorrect",
+      "mode": "after",
+      "elapsedMs": 1498,
+      "exitCode": 0,
+      "verdict": "incorrect",
+      "expected": "incorrect",
+      "valid": true
+    },
+    {
+      "sample": "incomplete",
+      "mode": "after",
+      "elapsedMs": 1507,
+      "exitCode": 0,
+      "verdict": "incorrect",
+      "expected": "incorrect",
+      "valid": true
+    }
+  ],
+  "apiVerification": {
+    "method": "Local Worker and local D1 using remote Workers AI binding, final prompt. API timings include answer storage, AI inference and result retrieval.",
+    "results": [
+      {
+        "apiMs": 1174,
+        "verdict": "correct",
+        "inferenceMs": 1133,
+        "totalMs": 1141
+      },
+      {
+        "apiMs": 930,
+        "verdict": "incorrect",
+        "inferenceMs": 894,
+        "totalMs": 901
+      },
+      {
+        "apiMs": 1108,
+        "verdict": "incorrect",
+        "inferenceMs": 1071,
+        "totalMs": 1079
+      }
+    ]
+  }
+}

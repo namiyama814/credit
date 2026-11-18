@@ -29,3 +29,33 @@ it('MCPから12問を段階保存・検算・確認・採用・回答しWorkers 
  expect(run).not.toHaveBeenCalled();expect(await roundProgress(h.db,h.user)).toEqual(before);
  }finally{await client.close();await h.mf.dispose();}
 });
+
+it('MCPのAI採点は回答時点の資料を渡し、権限と評価版を検証して履歴に保存する',async()=>{
+ const h=await harness();const clients:Client[]=[];
+ const connect=async(scopes:string[])=>{
+  const handler=mcpHandler(h.env,h.user,scopes),client=new Client({name:'grading-client',version:'1.0.0'});clients.push(client);
+  await client.connect(new StreamableHTTPClientTransport(new URL(h.env.APP_ORIGIN+'/mcp'),{fetch:async(input,init)=>{const request=new Request(input,init);request.headers.set('Host',new URL(request.url).host);return handler(request,h.env,{} as ExecutionContext);}}));return client;
+ };
+ try{
+  await insertQuestion(h.db,fixtureQuestion(0,'論述式'),0);const round=await startRound(h.db,h.user);const ex=await nextExercise(h.db,h.user);
+  const a=await submitAnswer(h.db,h.user,{id:id(),contextType:'round',contextId:round.id,questionId:ex.question!.id,versionId:ex.question!.versionId,response:'意味を説明した回答',durationMs:100});
+  const read=await connect(['learning:read']);
+  expect((await read.callTool({name:'get_grading_tasks',arguments:{}})).isError).toBe(true);
+  const client=await connect(['learning:read','questions:read','answers:read','grading:write']);
+  const fetched=await client.callTool({name:'get_grading_tasks',arguments:{}});expect(fetched.isError).not.toBe(true);
+  const {tasks}=(fetched.structuredContent as {data:{tasks:any[]}}).data;expect(tasks).toHaveLength(1);expect(tasks[0]).toMatchObject({attemptId:a.attempt.id,response:'意味を説明した回答',referenceAnswer:fixtureQuestion(0,'論述式').correct_answer});
+  const input={attemptId:a.attempt.id,evaluationSeq:tasks[0].evaluationSeq,verdict:'correct',reason:'必須概念を説明しています。',model:'client-test-model',confirm:true};
+  expect((await read.callTool({name:'submit_ai_grading',arguments:input})).isError).toBe(true);
+  const other=await connect(['learning:read','questions:read','answers:read','grading:write']);
+  // The same scopes cannot access a different user's answer.
+  const foreignHandler=mcpHandler(h.env,'other-user',['learning:read','questions:read','answers:read','grading:write']);
+  const foreign=new Client({name:'foreign',version:'1.0.0'});clients.push(foreign);
+  await foreign.connect(new StreamableHTTPClientTransport(new URL(h.env.APP_ORIGIN+'/mcp'),{fetch:async(input,init)=>{const request=new Request(input,init);request.headers.set('Host',new URL(request.url).host);return foreignHandler(request,h.env,{} as ExecutionContext);}}));
+  expect((await foreign.callTool({name:'submit_ai_grading',arguments:input})).isError).toBe(true);
+  expect((await client.callTool({name:'submit_ai_grading',arguments:input})).isError).not.toBe(true);
+  expect((await other.callTool({name:'submit_ai_grading',arguments:{...input,verdict:'incorrect'}})).isError).toBe(true);
+  expect(await h.db.prepare('SELECT verdict,method,response,evaluation_data FROM effective_attempts WHERE id=?').bind(a.attempt.id).first()).toMatchObject({verdict:'correct',method:'ai',response:JSON.stringify('意味を説明した回答'),evaluation_data:expect.stringContaining('mcp-ai-v1')});
+  expect(await h.db.prepare("SELECT status FROM jobs WHERE json_extract(payload,'$.attemptId')=?").bind(a.attempt.id).first()).toMatchObject({status:'done'});
+  expect((await roundProgress(h.db,h.user)).current!.status).toBe('cleared');
+ }finally{await Promise.all(clients.map(c=>c.close()));await h.mf.dispose();}
+});
